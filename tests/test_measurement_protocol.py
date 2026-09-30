@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -74,9 +75,19 @@ def test_summarize_rejects_empty_samples() -> None:
 # ------------------------------------------------------------------ 3.1 负载生成
 
 
+def _observed_us(tier_us: float, samples: int = 5) -> float:
+    """某档实测耗时的中位数。
+
+    取中位数而非单次采样——单次采样不是这个量该用的统计（报告本身也用中位数），拿它做断言
+    等于让校准去为一次调度抖动负责。
+    """
+    body = body_for_tier(tier_us)
+    return statistics.median(body() for _ in range(samples)) * 1e6
+
+
 @pytest.mark.parametrize("tier_us", TIERS_US)
 def test_body_duration_matches_its_tier(tier_us: float) -> None:
-    observed_us = body_for_tier(tier_us)() * 1e6
+    observed_us = _observed_us(tier_us)
     deviation = (observed_us - tier_us) / tier_us
     assert abs(deviation) <= BODY_DEVIATION_TOLERANCE, (
         f"{tier_us}us 档实测 {observed_us:.1f}us，偏差 {deviation:.1%}"
@@ -84,7 +95,7 @@ def test_body_duration_matches_its_tier(tier_us: float) -> None:
 
 
 def test_body_duration_rises_with_tier() -> None:
-    observed = [body_for_tier(tier_us)() for tier_us in TIERS_US]
+    observed = [_observed_us(tier_us) for tier_us in TIERS_US]
     assert observed == sorted(observed), f"执行体耗时不随档位单调上升：{observed}"
 
 

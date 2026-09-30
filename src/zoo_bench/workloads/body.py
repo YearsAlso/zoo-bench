@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 import time
 
 #: 单位工作的样本载荷。形状接近"取一帧数据 → 序列化 → 解析 → 做字符串处理"这类业务动作。
@@ -51,19 +52,41 @@ def measure_unit_work(repeats: int = 64) -> float:
     return samples[len(samples) // 2]
 
 
-def calibrate_iterations(target_seconds: float) -> int:
+def calibrate_iterations(
+    target_seconds: float,
+    *,
+    tolerance: float = 0.05,
+    max_passes: int = 4,
+    samples: int = 3,
+) -> int:
     """求出使执行体耗时接近 ``target_seconds`` 的迭代次数。
 
-    先按单位耗时线性估算，再实测一次按偏差修正一轮——单靠估算在档位跨度大时会偏（单位耗时
-    本身受缓存与频率影响）。
+    **每一步都取多次采样的中位数，并迭代到收敛**，原因是一次实测就定格会让校准受单次噪声
+    支配——实测在机器有负载时，单轮修正会把 10 ms 档偏到 +33%，而自检随后会因此随机失败。
+    迭代到 ``tolerance`` 以内或 ``max_passes`` 用完为止。
+
+    Args:
+        target_seconds: 目标耗时（秒）。
+        tolerance: 收敛判据。
+        max_passes: 最大修正轮数。
+        samples: 每轮取几次采样的中位数。
+
+    Returns:
+        迭代次数（至少 1）。
     """
     unit_seconds = measure_unit_work()
     if unit_seconds <= 0:
         return 1
 
     iterations = max(1, round(target_seconds / unit_seconds))
-    observed, _ = run_iterations(iterations)
-    if observed > 0:
+    for _ in range(max_passes):
+        observed = statistics.median(
+            run_iterations(iterations)[0] for _ in range(samples)
+        )
+        if observed <= 0:
+            break
+        if abs(observed - target_seconds) / target_seconds <= tolerance:
+            break
         iterations = max(1, round(iterations * target_seconds / observed))
     return iterations
 
