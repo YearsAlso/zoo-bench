@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import statistics
 from pathlib import Path
 from typing import Any
 
@@ -77,14 +76,18 @@ def test_summarize_rejects_empty_samples() -> None:
 # ------------------------------------------------------------------ 3.1 负载生成
 
 
-def _observed_us(tier_us: float, samples: int = 5) -> float:
-    """某档实测耗时的中位数。
+def _observed_us(tier_us: float, samples: int = 9) -> float:
+    """某档实测耗时的**最小值**。
 
-    取中位数而非单次采样——单次采样不是这个量该用的统计（报告本身也用中位数），拿它做断言
-    等于让校准去为一次调度抖动负责。
+    **取最小值而不是中位数**——这是"成本"量，竞争只会让它变大，故最小值是无竞争条件下的估计。
+    中位数会被机器当时的负载抬高：实测同一台机器上同一档在套件内曾偏到 +77%，而单独跑时
+    三次都在 5% 以内。用中位数断言校准正确，等于让校准为当时有多少别的进程在跑负责。
+
+    报告里两者都在场（`body_seconds` 同时给 median / min / max），门禁另行判定中位数——
+    这里断言的是"校准是否把执行体放对了量级"。
     """
     body = body_for_tier(tier_us)
-    return statistics.median(body() for _ in range(samples)) * 1e6
+    return min(body() for _ in range(samples)) * 1e6
 
 
 @pytest.mark.parametrize("tier_us", TIERS_US)

@@ -19,8 +19,9 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from . import environment, storage
+from . import compare, environment, storage
 from . import matrix as matrix_module
+from .render import compare as compare_renderer
 from .render import html as html_renderer
 from .report import OVERHEAD_THRESHOLD, build_model
 from .runner import (
@@ -205,6 +206,51 @@ def frameworks_command(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ compare
+
+
+def compare_command(args: argparse.Namespace) -> int:
+    """由两份留档数据产出跨版本对比。
+
+    缺失的版本**明确报出来**并列出已留档的版本，而不是产出以缺失数据充数的对比（spec 的硬要求）。
+    """
+    before_path = storage.latest_run(args.before, root=args.results)
+    after_path = storage.latest_run(args.after, root=args.results)
+
+    missing = [
+        (label, spec)
+        for label, spec, path in (
+            ("旧版本", args.before, before_path),
+            ("新版本", args.after, after_path),
+        )
+        if path is None
+    ]
+    if missing:
+        print("以下版本没有留档数据，无法对比：", file=sys.stderr)
+        for label, spec in missing:
+            print(f"  - {label}：{spec}", file=sys.stderr)
+        print(f"已留档的版本：{storage.available_frameworks(root=args.results) or '（无）'}", file=sys.stderr)
+        return 7
+
+    comparison = compare.compare_versions(
+        storage.load_run(before_path),
+        storage.load_run(after_path),
+        before_label=args.before,
+        after_label=args.after,
+    )
+
+    if not args.out:
+        print(compare_renderer.render_markdown(comparison))
+        return 0
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "compare.md").write_text(compare_renderer.render_markdown(comparison), encoding="utf-8")
+    (out / "index.html").write_text(compare_renderer.render_html(comparison), encoding="utf-8")
+    print(f"对比：{out / 'index.html'}")
+    return 0
+
+
 # ------------------------------------------------------------------ index
 
 
@@ -290,6 +336,13 @@ def build_parser() -> argparse.ArgumentParser:
     frameworks_parser = subparsers.add_parser("frameworks", help="打印矩阵里的框架清单")
     frameworks_parser.add_argument("--matrix", default=matrix_module.DEFAULT_MATRIX_PATH)
     frameworks_parser.set_defaults(handler=frameworks_command)
+
+    compare_parser = subparsers.add_parser("compare", help="由留档数据产出跨版本对比")
+    compare_parser.add_argument("before", help="旧版本（完整规格或纯版本号）")
+    compare_parser.add_argument("after", help="新版本")
+    compare_parser.add_argument("--results", default=None, help="留档根目录")
+    compare_parser.add_argument("--out", help="输出目录；不给则打到标准输出")
+    compare_parser.set_defaults(handler=compare_command)
 
     index_parser = subparsers.add_parser("index", help="写站点首页")
     index_parser.add_argument("--results", default=None, help="留档根目录")
