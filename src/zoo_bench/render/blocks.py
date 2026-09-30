@@ -53,13 +53,18 @@ class Block:
 
 
 def format_seconds(value: float | None) -> str:
-    """秒 → 便于阅读的单位。报告同时给数值与单位，省去读者换算。"""
+    """秒 → 便于阅读的单位。报告同时给数值与单位，省去读者换算。
+
+    **每个分支都要把秒换算成该单位**。实测踩过这个坑：毫秒分支印的是原始秒数却标 "ms"，于是
+    2.7 毫秒被印成 "0.003 ms"——**读起来像 3 微秒，差 1000 倍**。数字被低估三个数量级的报告，
+    比没有报告更坏。
+    """
     if value is None:
         return "—"
     if value >= 1.0:
         return f"{value:.3f} s"
     if value >= 1e-3:
-        return f"{value:.3f} ms"
+        return f"{value * 1e3:.3f} ms"
     return f"{value * 1e6:.2f} µs"
 
 

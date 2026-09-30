@@ -209,6 +209,19 @@ def test_both_backends_read_the_same_model() -> None:
     assert html_low != html_high
 
 
+def test_time_units_are_actually_converted() -> None:
+    """每个单位分支都必须真的把秒换算过去。
+
+    真事故的守卫：毫秒分支曾印原始秒数却标 "ms"，2.7 毫秒被印成 "0.003 ms"——读起来像 3 微秒，
+    **差 1000 倍**。这类错误不会被"章节都在"之类的断言发现，只能逐档断言数值本身。
+    """
+    assert blocks_module.format_seconds(2.7) == "2.700 s"
+    assert blocks_module.format_seconds(0.0027) == "2.700 ms"
+    assert blocks_module.format_seconds(0.00027) == "270.00 µs"
+    assert blocks_module.format_seconds(1e-5) == "10.00 µs"
+    assert blocks_module.format_seconds(None) == "—"
+
+
 def test_render_writes_both_formats(tmp_path: Path) -> None:
     """站点要 HTML，diff 与复用要 Markdown——一次渲染都写出来。"""
     outcome = html_renderer.render(_model(), tmp_path, threshold=0.15)
