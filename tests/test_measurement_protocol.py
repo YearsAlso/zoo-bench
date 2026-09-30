@@ -27,6 +27,7 @@ from zoo_bench.runner import (
     check_overhead_across_tiers,
     measure_matrix,
     run_in_child,
+    summarize_self_check,
 )
 from zoo_bench.workloads.body import body_for_tier
 
@@ -318,6 +319,67 @@ def _synthetic_unit(adapter: str, tier_us: float, overhead: float) -> dict[str, 
     }
 
 
+def test_self_check_summary_names_every_failing_item() -> None:
+    """门禁只说"未通过"会迫使排查者去下载留档数据——失败必须自带定位信息。
+    CI 上那是一次往返，而一次往返足以让人干脆把门禁关掉。"""
+    self_check = {
+        "ok": False,
+        "body_deviation": {
+            "checks": [
+                {
+                    "adapter": "zoo",
+                    "concurrency": 4,
+                    "body_target_seconds": 1e-3,
+                    "body_observed_median_seconds": 2e-3,
+                    "body_deviation": 1.0,
+                    "body_deviation_ok": False,
+                }
+            ],
+            "ok": False,
+        },
+        "overhead_across_tiers": {
+            "checks": [
+                {
+                    "adapter": "thread_pool",
+                    "concurrency": 1,
+                    "growth": 9.0,
+                    "overheads_seconds": [0.0001, 0.0009],
+                    "ok": False,
+                }
+            ],
+            "ok": False,
+        },
+        "adapter_equivalence": {
+            "results": {
+                "zoo": {
+                    "status": "ok",
+                    "payload": {"ok": False, "expected_count": 4, "observed_count": 1},
+                },
+                "process_pool": {"status": "failed", "error": "子进程退出码 1"},
+            },
+            "ok": False,
+        },
+    }
+
+    problems = summarize_self_check(self_check)
+
+    assert len(problems) == 4, f"每一项失败都该被列出：{problems}"
+    assert any("档位偏差" in problem and "zoo" in problem for problem in problems)
+    assert any("增长过快" in problem and "thread_pool" in problem for problem in problems)
+    assert any("等价性验证未通过" in problem for problem in problems)
+    assert any("未能执行" in problem and "process_pool" in problem for problem in problems)
+
+
+def test_self_check_summary_is_empty_when_everything_passed() -> None:
+    passed = {
+        "ok": True,
+        "body_deviation": {"checks": [{"body_deviation_ok": True}], "ok": True},
+        "overhead_across_tiers": {"checks": [{"ok": True}], "ok": True},
+        "adapter_equivalence": {"results": {"zoo": {"status": "ok", "payload": {"ok": True}}}},
+    }
+    assert summarize_self_check(passed) == []
+
+
 def test_overhead_check_passes_when_overhead_is_flat() -> None:
     units = [_synthetic_unit("zoo", tier_us, 0.0001) for tier_us in TIERS_US]
     result = check_overhead_across_tiers(units)
@@ -339,7 +401,10 @@ def test_overhead_check_catches_cost_leaking_into_overhead() -> None:
 
 
 def test_body_deviation_check_catches_a_doubled_workload() -> None:
-    """3.6：某一档执行体的实际工作量是设定值的两倍时，自检必须失败。"""
+    """3.6：某一档执行体的实际工作量是设定值的两倍时，自检必须失败。
+
+    这条同时是容差取值的鉴别力检查——容差若宽到抓不住翻倍，门禁就没用了。
+    """
     spec = _unit_spec("zoo", concurrency=1, body_tier_us=1000)
 
     on_target = {"body_seconds": {"median": 0.001}}
@@ -349,3 +414,15 @@ def test_body_deviation_check_catches_a_doubled_workload() -> None:
     failed = body_deviation_check(doubled, spec)
     assert failed["body_deviation_ok"] is False
     assert failed["body_deviation"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_body_deviation_tolerance_tolerates_measured_contention() -> None:
+    """容差必须容得下实测到的竞争：同一台机器上 10 ms 档曾偏到 +32%。
+
+    容差若卡在 30%，门禁就会因为"机器忙"而红——而那不是测量错误，是环境噪声。按这条把容差
+    的**下界**也固定住，避免以后有人凭感觉把它调紧。
+    """
+    spec = _unit_spec("zoo", concurrency=1, body_tier_us=10000)
+    contended = {"body_seconds": {"median": 0.0132}}  # 目标 10 ms，实测 13.2 ms
+
+    assert body_deviation_check(contended, spec)["body_deviation_ok"] is True

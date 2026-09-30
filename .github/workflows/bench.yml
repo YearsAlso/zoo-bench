@@ -74,6 +74,16 @@ jobs:
       - name: 写站点首页
         run: zoo-bench index --site site
 
+      - name: 保存原始数据
+        # 留档是这套东西存在的理由——渲染出的报告可以重来，原始数据不能。
+        # 而且自检失败时，排查只能靠它。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zoo-bench-results
+          path: results
+          if-no-files-found: warn
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

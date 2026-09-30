@@ -40,7 +40,16 @@ DEFAULT_VERIFY_CONCURRENCY = 4
 OVERHEAD_TIER_RATIO_LIMIT = 3.0
 
 #: 执行体实测耗时与档位设定值的允许偏差。
-BODY_DEVIATION_TOLERANCE = 0.30
+#:
+#: **按实测定的，两处实测**：安静环境下四档偏差 −4.5%~+4.1%；但在 pytest / CI 这类有竞争的
+#: 环境里，墙钟会被抬高——实测同一台机器上 10 ms 档一度偏到 **+32%**。若容差取 30%，门禁就会
+#: 因为"机器忙"而失败，而那不是测量错误。
+#:
+#: 取 0.6 的理由：既容得下观测到的竞争（32%），又能抓住真正该抓的错——工作量被写错一倍时偏差
+#: 是 +100%（tasks 3.6 的验证正是这条）。**注意这条判据不是精确性保证**：精确性靠
+#: :func:`check_overhead_across_tiers` 与报告里可直接读的分位数，那里才是"埋点是否漏算"的
+#: 判别信号。
+BODY_DEVIATION_TOLERANCE = 0.6
 
 #: 绝对耗时数字的固定标注。措辞刻意直白：CI runner 是共享虚拟机，跨运行引用这些数字
 #: 一句话就能被否（design D6）。
@@ -154,7 +163,11 @@ def _absolute_from_rounds(rounds: list[dict[str, Any]], spec: UnitSpec) -> dict[
 
 
 def body_deviation_check(absolute: dict[str, Any], spec: UnitSpec) -> dict[str, Any]:
-    """执行体实测耗时与档位设定值的偏差（spec: measurement-protocol 的自检要求）。"""
+    """执行体实测耗时与档位设定值的偏差（spec: measurement-protocol 的自检要求）。
+
+    这是**粗差判据**，不是精确性保证——精确性靠 :func:`check_overhead_across_tiers`。
+    容差按实测定，理由见 ``BODY_DEVIATION_TOLERANCE`` 的注释。
+    """
     target = spec.body_tier_us / 1_000_000.0
     observed = float(absolute["body_seconds"]["median"])
     deviation = (observed - target) / target if target else 0.0
@@ -311,6 +324,56 @@ def _run_self_check(
         "adapter_equivalence": {"results": verification, "ok": equivalence_ok},
         "ok": body_ok and overhead["ok"] and equivalence_ok,
     }
+
+
+def _body_deviation_problems(self_check: dict[str, Any]) -> list[str]:
+    """执行体档位偏差超容差的项。"""
+    return [
+        f"执行体档位偏差超容差：{check['adapter']} 并发度 {check['concurrency']}"
+        f"目标是 {float(check['body_target_seconds']) * 1e6:.0f} µs，"
+        f"实测 {float(check['body_observed_median_seconds']) * 1e6:.0f} µs"
+        f"（偏差 {float(check['body_deviation']):+.1%}）"
+        for check in self_check.get("body_deviation", {}).get("checks", [])
+        if not check.get("body_deviation_ok")
+    ]
+
+
+def _overhead_problems(self_check: dict[str, Any]) -> list[str]:
+    """跨档位开销增长过快的项。"""
+    return [
+        f"跨档位开销增长过快：{check['adapter']} 并发度 {check['concurrency']}"
+        f"增长倍数 {check['growth']}，各档开销 {check['overheads_seconds']}"
+        for check in self_check.get("overhead_across_tiers", {}).get("checks", [])
+        if not check.get("ok")
+    ]
+
+
+def _equivalence_problems(self_check: dict[str, Any]) -> list[str]:
+    """等价性验证未执行或未通过的项。"""
+    problems: list[str] = []
+    for adapter, outcome in self_check.get("adapter_equivalence", {}).get("results", {}).items():
+        if outcome.get("status") != "ok":
+            problems.append(f"等价性验证未能执行：{adapter} —— {outcome.get('error', '')}")
+        elif not outcome.get("payload", {}).get("ok"):
+            payload = outcome["payload"]
+            problems.append(
+                f"等价性验证未通过：{adapter} 期望 {payload.get('expected_count')} 条、"
+                f"实得 {payload.get('observed_count')} 条"
+            )
+    return problems
+
+
+def summarize_self_check(self_check: dict[str, Any]) -> list[str]:
+    """列出自检里**未通过**的部分。
+
+    门禁只说"未通过"而不说哪一项，排查的人就得去下载留档数据——在 CI 上那是一次往返，而
+    一次往返足以让人干脆把门禁关掉。所以失败必须自带足够定位的信息。
+    """
+    return [
+        *_body_deviation_problems(self_check),
+        *_overhead_problems(self_check),
+        *_equivalence_problems(self_check),
+    ]
 
 
 def measure_matrix(

@@ -23,7 +23,12 @@ from . import environment, storage
 from . import matrix as matrix_module
 from .render import html as html_renderer
 from .report import OVERHEAD_THRESHOLD, build_model
-from .runner import DEFAULT_MEASURED_ROUNDS, DEFAULT_WARMUP_ROUNDS, measure_matrix
+from .runner import (
+    DEFAULT_MEASURED_ROUNDS,
+    DEFAULT_WARMUP_ROUNDS,
+    measure_matrix,
+    summarize_self_check,
+)
 
 
 def _installed_framework_version() -> str | None:
@@ -93,7 +98,11 @@ def run_command(args: argparse.Namespace) -> int:
 
     path = storage.save_run(result, framework=framework, root=args.out)
     print(f"原始数据已留档：{path}")
-    print(f"自检：{'通过' if result['self_check']['ok'] else '未通过'}")
+
+    passed = result["self_check"]["ok"]
+    print(f"自检：{'通过' if passed else '未通过'}")
+    for problem in summarize_self_check(result["self_check"]):
+        print(f"  - {problem}")
     return 0
 
 
@@ -139,9 +148,11 @@ def render_command(args: argparse.Namespace) -> int:
         print(
             "本轮测量的自检未通过，拒绝出报告。"
             "\n自检覆盖执行体档位偏差、跨档位开销一致性与适配器等价性——它失败意味着"
-            "数字本身不可信，此时发布比不发布更坏。详见留档数据里的 self_check 与各单元 stderr。",
+            "数字本身不可信，此时发布比不发布更坏。未通过的项：",
             file=sys.stderr,
         )
+        for problem in summarize_self_check(result.get("self_check", {})):
+            print(f"  - {problem}", file=sys.stderr)
         return 5
 
     if not model["unfavorable"]["found"]:

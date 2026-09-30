@@ -10,7 +10,6 @@ spec 要求原始数据**按被测框架版本留档**，且给一个版本就�
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -23,20 +22,21 @@ TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
 
 _SLUG_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
-#: 项目仓库根：``src/zoo_bench/storage.py`` 往上三层。
-_PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 
 def results_root(base: str | Path | None = None) -> Path:
     """留档根目录。
 
+    **默认是当前工作目录下的 ``results/``，不是包所在目录下的**。这一处曾经写错并造成真实故障：
+    取包所在目录时，非 editable 安装（CI 就是）会把留档写进 ``site-packages/results/``——数据
+    既不在仓库里、也进不了构建产物，而"留档"的全部意义就是这些数据能被找回来。
+
     Args:
-        base: 显式指定；None 时取仓库根下的 ``results/``。
+        base: 显式指定；None 时取 ``./results``。
 
     Returns:
         根目录路径（不保证存在）。
     """
-    return Path(base) if base is not None else Path(_PACKAGE_ROOT) / DEFAULT_RESULTS_DIRNAME
+    return Path(base) if base is not None else Path.cwd() / DEFAULT_RESULTS_DIRNAME
 
 
 def framework_slug(framework: str) -> str:

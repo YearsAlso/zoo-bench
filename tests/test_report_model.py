@@ -148,6 +148,23 @@ def test_missing_version_is_reported_as_absent(tmp_path: Path) -> None:
     assert storage.run_files("1.2.3", root=tmp_path) == []
 
 
+def test_results_root_defaults_to_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """默认留档位置必须是**当前工作目录**下的 ``results/``。
+
+    这是真事故的回归守卫：早先取"包所在目录"，非 editable 安装（CI 就是）会把留档写进
+    ``site-packages/results/``——数据既不在仓库里、也进不了构建产物。而"留档"的全部意义就是
+    这些数据能被找回来。
+    """
+    monkeypatch.chdir(tmp_path)
+
+    assert storage.results_root() == tmp_path / "results"
+
+    saved = storage.save_run({"marker": 1}, framework="zoo-framework==9.9.9")
+    assert saved.is_relative_to(tmp_path), f"留档跑到了包所在目录：{saved}"
+
+
 def test_same_data_renders_identically(tmp_path: Path) -> None:
     """4.1：同一份留档数据重复建模结果一致——渲染可重跑，无需重新测量。"""
     source = _result(
