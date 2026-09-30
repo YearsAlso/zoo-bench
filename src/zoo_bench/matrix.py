@@ -31,14 +31,14 @@ class Matrix:
         frameworks: 允许测量的框架规格（如 ``zoo-framework==0.6.0``）。
         concurrency: 并发度档位。
         body_tiers_us: 执行体目标耗时档位（微秒）。
-        adapters: 默认参与的适配器。
+        adapters: 参与测量的适配器；**为 None 表示"全部已登记适配器"**。
         extra_modules: 需要额外装载的外部适配器模块。
     """
 
     frameworks: tuple[str, ...]
     concurrency: tuple[int, ...]
     body_tiers_us: tuple[float, ...]
-    adapters: tuple[str, ...]
+    adapters: tuple[str, ...] | None = None
     extra_modules: tuple[str, ...] = ()
 
 
@@ -65,13 +65,32 @@ def load(path: str | Path = DEFAULT_MATRIX_PATH) -> Matrix:
         raise MatrixError(f"找不到矩阵文件：{matrix_path}")
 
     raw = yaml.safe_load(matrix_path.read_text(encoding="utf-8")) or {}
+    adapters = raw.get("adapters")
     return Matrix(
         frameworks=tuple(str(item) for item in _require(raw, "frameworks", matrix_path)),
         concurrency=tuple(int(item) for item in _require(raw, "concurrency", matrix_path)),
         body_tiers_us=tuple(float(item) for item in _require(raw, "body_tiers_us", matrix_path)),
-        adapters=tuple(str(item) for item in _require(raw, "adapters", matrix_path)),
+        adapters=None if adapters is None else tuple(str(item) for item in adapters),
         extra_modules=tuple(str(item) for item in raw.get("extra_modules") or ()),
     )
+
+
+def resolve_adapters(matrix: Matrix) -> tuple[str, ...]:
+    """把 ``adapters`` 解析成具体的适配器标识清单。
+
+    为 None 时取**全部已登记适配器**。这不只是省事：手维护的那份清单曾经漏掉被测对象本身，
+    因为它是在 zoo 适配器存在之前写的——**"忘了同步"这种错误靠不住人，只能靠机制**。
+
+    Raises:
+        MatrixError: 显式列出的适配器里没有测对象，或清单为空。
+    """
+    if matrix.adapters is not None:
+        return matrix.adapters
+
+    from .adapters import registry
+
+    registry.load_builtins()
+    return tuple(sorted(registry.registered()))
 
 
 def select_framework(matrix: Matrix, specifier: str | None) -> str:
@@ -131,7 +150,7 @@ def unit_specs(
             extra_modules=matrix.extra_modules,
         )
         for adapter, workers, tier in product(
-            adapters if adapters is not None else matrix.adapters,
+            adapters if adapters is not None else resolve_adapters(matrix),
             concurrency if concurrency is not None else matrix.concurrency,
             body_tiers_us if body_tiers_us is not None else matrix.body_tiers_us,
         )

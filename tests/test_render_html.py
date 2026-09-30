@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from zoo_bench import cli, storage
+from zoo_bench import matrix as matrix_module
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import html as html_renderer
 from zoo_bench.render import markdown as markdown_renderer
@@ -273,6 +274,36 @@ def test_render_refuses_when_self_check_failed(tmp_path: Path) -> None:
     )
     assert code == 5
     assert not (tmp_path / "site" / "index.html").exists()
+
+
+def test_matrix_without_explicit_adapters_covers_every_registered_adapter(tmp_path: Path) -> None:
+    """``adapters`` 留空即全部已登记适配器。
+
+    这条是真事故的回归守卫：手维护的那份清单是在 zoo 适配器存在之前写的，后来加了 zoo 却忘了
+    同步，于是 CI 跑出的 80 个单元里**一个被测对象都没有**。**"忘了同步"靠不住人，只能靠机制。**
+    """
+    matrix_path = tmp_path / "matrix.yaml"
+    matrix_path.write_text(
+        "frameworks: ['zoo-framework==1.2.3']\nconcurrency: [1]\nbody_tiers_us: [100]\n",
+        encoding="utf-8",
+    )
+
+    matrix = matrix_module.load(matrix_path)
+    assert matrix.adapters is None
+
+    resolved = matrix_module.resolve_adapters(matrix)
+    assert "zoo" in resolved, "被测对象必须在默认清单里"
+    assert {"bare_thread", "thread_pool"} <= set(resolved)
+
+
+def test_default_matrix_includes_the_subject() -> None:
+    """本仓库真实的 matrix.yaml 也必须包含被测对象——上面那条用的是临时文件，这条验真的那份。"""
+    matrix = matrix_module.load(matrix_module.DEFAULT_MATRIX_PATH)
+
+    assert "zoo" in matrix_module.resolve_adapters(matrix)
+
+    specs = matrix_module.unit_specs(matrix, framework=matrix.frameworks[0])
+    assert any(spec.adapter == "zoo" for spec in specs)
 
 
 def test_frameworks_command_prints_the_matrix_verbatim(

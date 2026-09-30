@@ -283,15 +283,38 @@ def test_recorded_command_does_not_duplicate_the_subcommand() -> None:
     assert command == ["zoo-bench", "run", "--rounds", "5"]
 
 
+def _subject_stub_unit() -> dict[str, Any]:
+    """一个最小的被测单元——桩数据也必须带被测对象，否则触发的是"没有被测框架"那道门禁。"""
+    return {
+        "spec": {"adapter": "zoo", "concurrency": 1, "body_tier_us": 300.0},
+        "status": "ok",
+        "adapter": {
+            "name": "zoo",
+            "tier": "under_test",
+            "comparable": True,
+            "notes": "",
+            "drive_level": "调度派发层",
+        },
+        "absolute": {
+            "end_to_end_per_task_seconds": {"median": 0.0003, "p95": 0.0003, "p99": 0.0003,
+                                            "relative_spread": 0.0},
+            "body_seconds": {"median": 0.0002},
+            "framework_overhead_seconds": 0.0001,
+            "framework_overhead_ratio": 0.33,
+            "throughput_per_second": 3000.0,
+        },
+    }
+
+
 def _save_stub_run(root: Path, *, environment: dict[str, Any] | None) -> None:
-    """存一份**桩**留档：没有测量单元，故也不含任何"不利数据"。
+    """存一份**桩**留档：只有被测单元、没有任何对照单元，故也不含"不利数据"。
 
     用来验门禁本身——门禁的判别力靠直接构造条件，而不是指望真实测量恰好落在某种情形上。
     真实运行里"被测框架从未处于劣势"是不可控的，桩数据让它可控。
     """
     result = {
         "run": {"absolute_note": ABSOLUTE_NOTE},
-        "units": [],
+        "units": [_subject_stub_unit()],
         "relative": {"comparisons": []},
         "environment": environment,
         "semantics": None,
@@ -348,6 +371,48 @@ def test_unfavorable_exemption_is_recorded_in_the_report(tmp_path: Path) -> None
     report = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
     assert "发布豁免" in report
     assert "审计线索" in report
+
+
+def test_render_refuses_when_the_subject_is_missing(tmp_path: Path) -> None:
+    """没有被测对象的报告必须被拒——这是**配置错误**，不是测量结论。
+
+    真事故的守卫：matrix.yaml 的 adapters 清单漏了 zoo，CI 于是测了 80 个单元、**一个被测对象
+    都没有**。当时被"无不利数据"那道门禁拦住了，但理由误导了排查方向——所以这道门禁必须独立
+    存在且说清楚。
+    """
+    results = tmp_path / "results"
+    storage.save_run(
+        {
+            "run": {"absolute_note": ABSOLUTE_NOTE},
+            "units": [
+                {
+                    "spec": {"adapter": "bare_thread", "concurrency": 1, "body_tier_us": 300.0},
+                    "status": "ok",
+                    "adapter": {"name": "bare_thread", "tier": "bare", "comparable": True,
+                                "notes": "", "drive_level": ""},
+                    "absolute": {
+                        "end_to_end_per_task_seconds": {"median": 0.0002, "p95": 0.0002,
+                                                        "p99": 0.0002, "relative_spread": 0.0},
+                        "body_seconds": {"median": 0.0002},
+                        "framework_overhead_seconds": 0.0,
+                        "framework_overhead_ratio": 0.0,
+                        "throughput_per_second": 5000.0,
+                    },
+                }
+            ],
+            "relative": {"comparisons": []},
+            "environment": {"hardware": {}, "os": {}, "python": {}, "harness": {}, "subject": {}},
+            "self_check": {"ok": True},
+        },
+        framework=FRAMEWORK,
+        root=results,
+    )
+
+    code = cli.main(
+        ["render", "--framework", "9.9.9", "--results", str(results), "--out", str(tmp_path / "site")]
+    )
+    assert code == 6
+    assert not (tmp_path / "site" / "index.html").exists()
 
 
 def test_render_reports_which_versions_are_archived(tmp_path: Path) -> None:

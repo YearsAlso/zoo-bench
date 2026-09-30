@@ -155,6 +155,15 @@ def render_command(args: argparse.Namespace) -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 5
 
+    if model["subject"] is None:
+        print(
+            "留档数据里没有被测框架的单元，拒绝出报告。"
+            "\n这是一份配置错误而不是测量结论：报告里必须有被测对象，否则无从对照。"
+            "\n检查 matrix.yaml 的 adapters 是否漏了被测框架（留空表示全部已登记适配器）。",
+            file=sys.stderr,
+        )
+        return 6
+
     if not model["unfavorable"]["found"]:
         if not args.allow_empty_unfavorable:
             print(

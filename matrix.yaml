@@ -19,10 +19,13 @@ concurrency: [1, 4, 16, 64]
 body_tiers_us: [40, 300, 2700, 10000]
 
 # 参与默认测量的适配器。
-# 需外部服务的方案（celery）不在此列 —— 架构不同、不可直接对标（design D3）。
-adapters:
-  - bare_thread
-  - thread_pool
-  - asyncio_pool
-  - process_pool
-  - apscheduler
+#
+# **留空即"全部已登记适配器"**——刻意不在这里手维护一份清单：实测过它的代价，早先这份清单是
+# 在 zoo 适配器存在之前写的，后来加了 zoo 却忘了同步，于是 CI 跑出的 80 个单元里**一个被测
+# 对象都没有**（门禁拦住了那份报告，但理由说的是"没有不利数据"，误导排查方向）。
+# 需要跑子集时再显式列出。
+#
+# 需外部服务的方案（celery）不受影响：它的可选依赖缺失时本就不会被登记（design D3）。
+# adapters:
+#   - zoo
+#   - bare_thread
