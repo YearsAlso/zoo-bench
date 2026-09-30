@@ -4,9 +4,9 @@
 
 ## ADDED Requirements
 
-### Requirement: 负载 MUST 覆盖执行体档位与并发度两个维度
+### Requirement: 负载 MUST 覆盖执行体档位与并发度
 
-测量 SHALL 在两个维度上展开：执行体耗时档位与并发度档位。两者 MUST 均可由配置声明，MUST NOT 硬编码在测量代码中。
+测量 SHALL 在以下维度上展开：执行体耗时档位与并发度档位。两者 MUST 均可由配置声明，MUST NOT 硬编码在测量代码中。
 
 #### Scenario: 执行体档位由配置声明
 - **WHEN** 读取负载配置

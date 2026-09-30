@@ -3,8 +3,9 @@
 # 版本清单**显式维护**（design D8）：不自动跟踪 PyPI 最新版，也不跟踪框架仓库的 dev 分支。
 # 发版后由维护者追加一行；跨版本提升报告需要至少两个版本同时留档。
 #
-# 版本号必须真实存在于 PyPI，否则安装必然失败。注意：框架仓库 pyproject.toml 里写的
-# `0.5.3-beta` 从未发布过，PyPI 上实际存在的是 `0.5.4b0` 与 `0.6.0`。
+# 版本号必须真实存在于 PyPI，否则安装必然失败。不要照抄框架仓库 pyproject.toml 里的版本号
+# ——实测它与 PyPI 上的发行版对不上。核对当前可用版本：
+#   uv pip index versions zoo-framework
 
 frameworks:
   - "zoo-framework==0.6.0"
