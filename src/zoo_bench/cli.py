@@ -21,7 +21,7 @@ from typing import Any
 
 from . import environment, storage
 from . import matrix as matrix_module
-from .render import markdown as markdown_renderer
+from .render import html as html_renderer
 from .report import OVERHEAD_THRESHOLD, build_model
 from .runner import DEFAULT_MEASURED_ROUNDS, DEFAULT_WARMUP_ROUNDS, measure_matrix
 
@@ -135,6 +135,15 @@ def render_command(args: argparse.Namespace) -> int:
         )
         return 3
 
+    if not result.get("self_check", {}).get("ok"):
+        print(
+            "本轮测量的自检未通过，拒绝出报告。"
+            "\n自检覆盖执行体档位偏差、跨档位开销一致性与适配器等价性——它失败意味着"
+            "数字本身不可信，此时发布比不发布更坏。详见留档数据里的 self_check 与各单元 stderr。",
+            file=sys.stderr,
+        )
+        return 5
+
     if not model["unfavorable"]["found"]:
         if not args.allow_empty_unfavorable:
             print(
@@ -154,10 +163,76 @@ def render_command(args: argparse.Namespace) -> int:
             }
         )
 
-    outcome = markdown_renderer.render(model, args.out, threshold=OVERHEAD_THRESHOLD)
-    print(f"报告：{outcome['report']}")
+    outcome = html_renderer.render(model, args.out, threshold=OVERHEAD_THRESHOLD)
+    print(f"报告：{outcome['html']}")
+    print(f"Markdown：{outcome['markdown']}")
     if outcome["font"]:
         print(f"图表字体：{outcome['font']}")
+    return 0
+
+
+# ------------------------------------------------------------------ frameworks
+
+
+def frameworks_command(args: argparse.Namespace) -> int:
+    """打印矩阵里的框架清单，一行一个。
+
+    给 CI 用：让工作流从 ``matrix.yaml`` 取版本清单，而不是把版本号抄进 YAML——抄一份就会有
+    两处真源，而它们迟早不一致（design D8）。
+    """
+    for framework in matrix_module.load(args.matrix).frameworks:
+        print(framework)
+    return 0
+
+
+# ------------------------------------------------------------------ index
+
+
+def index_command(args: argparse.Namespace) -> int:
+    """写站点首页：列出已出报告的版本并链过去。
+
+    **放在代码里而不是 YAML 里**——把"首页长什么样"写在 workflow 里就没法被用例盖到，而它是
+    读者进入报告的唯一入口。
+    """
+    site = Path(args.site)
+    site.mkdir(parents=True, exist_ok=True)
+
+    entries = [
+        (slug, f"{slug}/index.html")
+        for slug in storage.available_frameworks(root=args.results)
+        if (site / slug / "index.html").is_file()
+    ]
+
+    if entries:
+        items = "\n".join(f'<li><a href="{href}">{slug}</a></li>' for slug, href in entries)
+        body = f"<ul>{items}</ul>"
+    else:
+        body = "<p>还没有任何已渲染的报告。</p>"
+
+    (site / "index.html").write_text(
+        "\n".join(
+            [
+                "<!doctype html>",
+                '<html lang="zh-CN">',
+                "<head>",
+                '<meta charset="utf-8">',
+                '<meta name="viewport" content="width=device-width, initial-scale=1">',
+                "<title>zoo-bench 性能报告</title>",
+                "<style>body{font-family:-apple-system,'Segoe UI','Noto Sans CJK SC',sans-serif;"
+                "max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.7}"
+                "</style>",
+                "</head>",
+                "<body>",
+                "<h1>zoo-bench 性能报告</h1>",
+                body,
+                "</body>",
+                "</html>",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    print(f"首页：{site / 'index.html'}")
     return 0
 
 
@@ -191,6 +266,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="显式豁免「缺不利数据」这一拒绝条件（例外会被写进报告，使豁免可审计）",
     )
     render_parser.set_defaults(handler=render_command)
+
+    frameworks_parser = subparsers.add_parser("frameworks", help="打印矩阵里的框架清单")
+    frameworks_parser.add_argument("--matrix", default=matrix_module.DEFAULT_MATRIX_PATH)
+    frameworks_parser.set_defaults(handler=frameworks_command)
+
+    index_parser = subparsers.add_parser("index", help="写站点首页")
+    index_parser.add_argument("--results", default=None, help="留档根目录")
+    index_parser.add_argument("--site", required=True, help="站点目录")
+    index_parser.set_defaults(handler=index_command)
     return parser
 
 
