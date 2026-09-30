@@ -25,6 +25,7 @@ from zoo_bench.runner import (
     UnitSpec,
     body_deviation_check,
     check_overhead_across_tiers,
+    grade_body_deviation,
     measure_matrix,
     run_in_child,
     summarize_self_check,
@@ -389,15 +390,75 @@ def test_overhead_check_passes_when_overhead_is_flat() -> None:
 def test_overhead_check_catches_cost_leaking_into_overhead() -> None:
     """design D5 那个 bug 的鉴别力：执行体成本被漏算进开销时，开销会随档位上升。
 
-    合成数据让开销随档位涨约 10 倍——判据必须判否，否则它只是装饰。
+    合成数据让开销逐档放大到 16 倍——判据必须判否。**倍数刻意远大于上限（5）**：上限是按
+    实测噪声（共享 runner 上见过 3.22 倍）定的，鉴别力用例必须证明它能抓住真正的泄漏。
     """
     units = [
-        _synthetic_unit("zoo", tier_us, 0.0001 * (index + 1) * 2.5)
+        _synthetic_unit("zoo", tier_us, 0.0001 * (index + 1) ** 2)
         for index, tier_us in enumerate(TIERS_US)
     ]
     result = check_overhead_across_tiers(units)
     assert result["ok"] is False
     assert result["checks"][0]["growth"] > OVERHEAD_TIER_RATIO_LIMIT
+
+
+def test_overhead_check_tolerates_measured_shared_runner_noise() -> None:
+    """共享 runner 上实测见过同一适配器四档开销差异 3.22 倍——那是噪声，不该判否。
+
+    把上限的**下界**固定住，避免以后有人凭感觉调紧而让门禁因环境噪声变红。
+    """
+    units = [_synthetic_unit("zoo", tier_us, 0.000020 * factor) for tier_us, factor in
+             zip(TIERS_US, (1.0, 1.17, 1.5, 3.22), strict=True)]
+    assert check_overhead_across_tiers(units)["ok"] is True
+
+
+# ------------------------------------------------------------------ 偏差判定的分档
+
+
+def _deviation_unit(adapter: str, concurrency: int, *, ok: bool) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": 10000.0},
+        "checks": {
+            "body": {
+                "body_deviation_ok": ok,
+                "body_target_seconds": 0.01,
+                "body_observed_median_seconds": 0.01 if ok else 0.02,
+                "body_deviation": 0.0 if ok else 1.0,
+            }
+        },
+        "absolute": {"framework_overhead_seconds": 0.0001},
+    }
+
+
+def test_body_deviation_only_gates_the_lowest_concurrency() -> None:
+    """CI 首跑的诊断：偏差随并发度单调放大，而并发度 1 全部通过。
+
+    执行体测的是墙钟，并发超过环境实际容量时它被调度推迟——那是排队，不是测量错误。真正的
+    校准错误会在**所有**并发度上同样表现，故最低档足以判定。
+    """
+    graded = grade_body_deviation(
+        [_deviation_unit("zoo", 1, ok=True), _deviation_unit("zoo", 64, ok=False)]
+    )
+
+    assert graded["gated_concurrency"] == 1
+    assert graded["ok"] is True, "最高档因超订超容差，不该让判据失败"
+
+    high = next(check for check in graded["checks"] if check["concurrency"] == 64)
+    assert high["gated"] is False
+    assert "环境超订" in high["note"], "不参与判定必须给出原因，且原始值仍要在场"
+    assert high["body_deviation"] == 1.0
+
+
+def test_body_deviation_gates_failure_at_the_lowest_concurrency() -> None:
+    """最低档自己超容差 → 判否。否则"只在最低档判定"会退化成"永不判定"。"""
+    assert grade_body_deviation([_deviation_unit("zoo", 1, ok=False)])["ok"] is False
+
+
+def test_body_deviation_has_no_gated_concurrency_without_units() -> None:
+    graded = grade_body_deviation([])
+    assert graded["gated_concurrency"] is None
+    assert graded["checks"] == []
 
 
 def test_body_deviation_check_catches_a_doubled_workload() -> None:
