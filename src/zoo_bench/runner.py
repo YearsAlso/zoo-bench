@@ -318,6 +318,7 @@ def measure_matrix(
     *,
     verify_adapters: bool = True,
     verify_concurrency: int = DEFAULT_VERIFY_CONCURRENCY,
+    with_semantics: bool = True,
 ) -> dict[str, Any]:
     """跑完一批测量单元，返回运行结果。
 
@@ -325,13 +326,29 @@ def measure_matrix(
         specs: 要跑的单元清单。
         verify_adapters: 是否先对每个用到的适配器做等价性验证。
         verify_concurrency: 等价性验证使用的并发度。
+        with_semantics: 是否探查调度语义维度（design D7）。探查在独立子进程内跑，
+            结论带证据——"没有一项可测"也是结论，与"遗漏未测"必须区分得开。
 
     Returns:
         含 ``run`` / ``units`` / ``verification`` / ``process_isolation`` / ``self_check`` /
-        ``relative`` 的运行结果。可 ``json.dumps`` 落盘。
+        ``relative`` / ``semantics`` 的运行结果。可 ``json.dumps`` 落盘。
     """
     started_at = time.time()
     run_started = time.perf_counter()
+
+    semantics: dict[str, Any] | None = None
+    if with_semantics:
+        outcome = run_in_child("semantics", {})
+        if outcome["status"] == "ok":
+            semantics = outcome["payload"]
+        else:
+            # 探查失败本身要如实记录，不能让它看起来像"这一维度不存在"
+            semantics = {
+                "title": "调度语义的代价",
+                "status": "probe_failed",
+                "error": outcome.get("error", ""),
+                "stderr": outcome.get("stderr", ""),
+            }
 
     verification: dict[str, Any] = {}
     if verify_adapters:
@@ -391,4 +408,5 @@ def measure_matrix(
         "process_isolation": isolated,
         "self_check": _run_self_check(units, verification),
         "relative": _relative_block(units),
+        "semantics": semantics,
     }

@@ -314,6 +314,25 @@ def _throughput_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _unmeasured_semantics() -> dict[str, Any]:
+    """语义维度在**连探查都没跑**时的占位。
+
+    与"探查跑了、结论是不可测"不同：那是结论，这是遗漏。两者的区分正是 ``reason`` 与
+    ``items`` 的有无——报告里必须能看出是哪一种。
+    """
+    return {
+        "title": "调度语义的代价",
+        "status": "not_probed",
+        "scope_note": (
+            "本维度采用**内部开关对照**（同一 workload 下语义全关 vs 逐个开启），"
+            "**不与对照方案横向比较**——裸写法没有优先级/超时/重试的对应物，"
+            "故只能回答“本框架的语义值多少钱”，不能回答“比裸写法贵多少”"
+        ),
+        "items": [],
+        "reason": "本轮运行未包含语义维度探查（以 with_semantics=False 运行）",
+    }
+
+
 def build_model(
     result: dict[str, Any],
     *,
@@ -327,8 +346,10 @@ def build_model(
         result: :func:`zoo_bench.runner.measure_matrix` 的返回值。
         environment: 环境自述；None 时模型里标注为缺失（渲染层应拒绝发布）。
         source: 原始数据的来源信息（路径、框架规格、留档时间）。
-        semantics: 调度语义维度的测量结果。**缺失时如实标注为未测量**，不省略该维度——
-            省略会让读者以为它不存在，而它恰恰是被测框架最主要的差异化。
+        semantics: 调度语义维度的测量结果。**缺省时取 ``result["semantics"]``**（由
+            :func:`zoo_bench.runner.measure_matrix` 的探查产出）；两者都没有时如实标注为
+            未探查。**无论如何都不省略该维度**——省略会让读者以为它不存在，而它恰恰是被测
+            框架最主要的差异化。
 
     Returns:
         可直接 JSON 序列化的报告模型。三个输出后端都只消费它。
@@ -337,6 +358,8 @@ def build_model(
     subject = subject_name(units)
     crossings = _overhead_crossings(units)
     turnings = _relative_turnings(result, subject)
+
+    resolved_semantics = semantics if semantics is not None else result.get("semantics")
 
     return {
         "schema": MODEL_SCHEMA,
@@ -361,18 +384,9 @@ def build_model(
             "latency": _latency_dimension(units),
             "overhead": _overhead_dimension(units),
             "throughput": _throughput_dimension(units),
-            "semantics": semantics
-            if semantics is not None
-            else {
-                "title": "调度语义的代价",
-                "status": "not_measured",
-                "scope_note": (
-                    "本维度采用**内部开关对照**（同一 workload 下语义全关 vs 逐个开启），"
-                    "**不与对照方案横向比较**——裸写法没有优先级/超时/重试的对应物，"
-                    "故只能回答“本框架的语义值多少钱”，不能回答“比裸写法贵多少”"
-                ),
-                "reason": "尚未测量",
-            },
+            "semantics": resolved_semantics
+            if resolved_semantics is not None
+            else _unmeasured_semantics(),
         },
         "unfavorable": _unfavorable(result, subject),
         "caveats": _caveats(units, result.get("verification", {})),

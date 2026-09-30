@@ -344,7 +344,7 @@ def test_semantics_dimension_is_present_and_declares_its_scope_when_unmeasured()
     model = build_model(_result([]))
     semantics = model["dimensions"]["semantics"]
 
-    assert semantics["status"] == "not_measured"
+    assert semantics["status"] == "not_probed"
     assert "内部开关对照" in semantics["scope_note"]
     assert "不与对照方案横向比较" in semantics["scope_note"]
 

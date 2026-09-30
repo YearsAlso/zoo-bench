@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .adapters import registry
+from .semantics import probe_semantics
 from .workloads.body import body_for_tier
 from .workloads.identity import SlotBody, expected_durations, match_one_to_one
 
@@ -118,9 +119,22 @@ def measure_unit(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_KINDS = {"verify": verify_equivalence, "measure": measure_unit}
+def probe_semantics_task(spec: dict[str, Any]) -> dict[str, Any]:
+    """调度语义维度的探查。
 
-_USAGE = "用法: python -m zoo_bench.worker <verify|measure> <spec-json> <out-path>"
+    参数不被使用，但与其他 kind 统一为"接收 spec"——这样 ``_KINDS`` 的分发表不必有特例。
+    """
+    del spec
+    return probe_semantics()
+
+
+_KINDS = {
+    "verify": verify_equivalence,
+    "measure": measure_unit,
+    "semantics": probe_semantics_task,
+}
+
+_USAGE = "用法: python -m zoo_bench.worker <verify|measure|semantics> <spec-json> <out-path>"
 
 
 def main(argv: list[str] | None = None) -> int:
