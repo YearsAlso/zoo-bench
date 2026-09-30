@@ -1,0 +1,27 @@
+# zoo-bench 测量矩阵
+#
+# 版本清单**显式维护**（design D8）：不自动跟踪 PyPI 最新版，也不跟踪框架仓库的 dev 分支。
+# 发版后由维护者追加一行；跨版本提升报告需要至少两个版本同时留档。
+#
+# 版本号必须真实存在于 PyPI，否则安装必然失败。注意：框架仓库 pyproject.toml 里写的
+# `0.5.3-beta` 从未发布过，PyPI 上实际存在的是 `0.5.4b0` 与 `0.6.0`。
+
+frameworks:
+  - "zoo-framework==0.6.0"
+  # 做跨版本对比时追加，例如：
+  # - "zoo-framework==0.5.4b0"
+
+# 并发度档位
+concurrency: [1, 4, 16, 64]
+
+# 执行体耗时档位（微秒）。对应 bench/ 实测的 cpu-1x / cpu-10x / cpu-100x / io-10ms 四档。
+body_tiers_us: [40, 300, 2700, 10000]
+
+# 参与默认测量的适配器。
+# 需外部服务的方案（celery）不在此列 —— 架构不同、不可直接对标（design D3）。
+adapters:
+  - bare_thread
+  - thread_pool
+  - asyncio_pool
+  - process_pool
+  - apscheduler

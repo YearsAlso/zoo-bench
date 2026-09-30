@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zoo-bench"
+version = "0.0.1"
+description = "Zoo Framework 的基准 harness —— 面向对外选型举证的测量与报告"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.13"
+authors = [
+    {name = "YearsAlso"},
+]
+keywords = ["benchmark", "scheduler", "zoo-framework"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Benchmark",
+]
+
+dependencies = [
+    # 被测对象。此处**不固定版本**：要测哪个版本由 matrix.yaml 决定（design D8），
+    # 由 runner 在运行前校验实际安装版本与清单一致。
+    "zoo-framework",
+    "apscheduler>=3.10",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# 需外部服务的对照方案，不进入默认矩阵（design D3）
+celery = ["celery>=5.3"]
+dev = [
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zoo_bench"]
+
+# ============================================
+# Ruff 配置（与框架仓库保持同一套规则）
+# ============================================
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "I", "UP", "B", "SIM", "C4", "RET", "PERF", "RUF"]
+ignore = [
+    "E501",  # 行宽由 formatter 负责
+    "RUF001", "RUF002", "RUF003",  # 中文注释与文档
+    "E722",  # 裸 except 允许
+    "RET504",  # 不强制去掉赋值
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "auto"
+
+# ============================================
+# Pytest 配置
+# ============================================
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short"]
+markers = [
+    "slow: 测量类用例，耗时较长",
+    "selfcheck: 测量口径自检",
+]
