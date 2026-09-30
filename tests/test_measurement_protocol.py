@@ -415,15 +415,17 @@ def test_overhead_check_tolerates_measured_shared_runner_noise() -> None:
 # ------------------------------------------------------------------ 偏差判定的分档
 
 
-def _deviation_unit(adapter: str, concurrency: int, *, ok: bool) -> dict[str, Any]:
+def _deviation_unit(
+    adapter: str, concurrency: int, *, ok: bool, tier_us: float = 10000.0
+) -> dict[str, Any]:
     return {
         "status": "ok",
-        "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": 10000.0},
+        "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": tier_us},
         "checks": {
             "body": {
                 "body_deviation_ok": ok,
-                "body_target_seconds": 0.01,
-                "body_observed_median_seconds": 0.01 if ok else 0.02,
+                "body_target_seconds": tier_us / 1e6,
+                "body_observed_median_seconds": tier_us / 1e6 * (1.0 if ok else 2.0),
                 "body_deviation": 0.0 if ok else 1.0,
             }
         },
@@ -450,8 +452,20 @@ def test_body_deviation_only_gates_the_lowest_concurrency() -> None:
     assert high["body_deviation"] == 1.0
 
 
+def test_body_deviation_does_not_gate_the_shortest_tier() -> None:
+    """40 µs 档在并发度 1 下仍实测 +63.1%——几十微秒的窗口在共享 runner 上受调度颗粒度支配。
+
+    排除排队因素后剩下的这条原因与并发度那条不同，故单独有用例。
+    """
+    graded = grade_body_deviation([_deviation_unit("zoo", 1, ok=False, tier_us=40.0)])
+
+    assert graded["ok"] is True, "档位过短时不该判否"
+    assert graded["checks"][0]["gated"] is False
+    assert "档位过短" in graded["checks"][0]["note"]
+
+
 def test_body_deviation_gates_failure_at_the_lowest_concurrency() -> None:
-    """最低档自己超容差 → 判否。否则"只在最低档判定"会退化成"永不判定"。"""
+    """最低档的长档位自己超容差 → 判否。否则"只在最低档判定"会退化成"永不判定"。"""
     assert grade_body_deviation([_deviation_unit("zoo", 1, ok=False)])["ok"] is False
 
 

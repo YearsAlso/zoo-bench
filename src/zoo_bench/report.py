@@ -212,7 +212,11 @@ def _unfavorable(result: dict[str, Any], subject: str | None) -> dict[str, Any]:
     }
 
 
-def _caveats(units: list[dict[str, Any]], verification: dict[str, Any]) -> list[dict[str, Any]]:
+def _caveats(
+    units: list[dict[str, Any]],
+    verification: dict[str, Any],
+    self_check: dict[str, Any],
+) -> list[dict[str, Any]]:
     """口径局限与偏差来源，逐条列明。"""
     caveats: list[dict[str, Any]] = []
 
@@ -267,6 +271,30 @@ def _caveats(units: list[dict[str, Any]], verification: dict[str, Any]) -> list[
                     "text": "未通过“提交的任务全部执行且各执行一次”的验证，其数据不可信",
                 }
             )
+    ungated = [
+        check
+        for check in self_check.get("body_deviation", {}).get("checks", [])
+        if not check.get("gated", True)
+    ]
+    if ungated:
+        tiers = sorted(
+            {
+                round(float(check["body_target_seconds"]) * 1e6)
+                for check in ungated
+                if "body_target_seconds" in check
+            }
+        )
+        caveats.append(
+            {
+                "kind": "未参与判定的自检项",
+                "count": len(ungated),
+                "text": "这些单元的执行体档位偏差未参与判定（并发度高于最低档，或档位短到墙钟"
+                "受调度颗粒度支配）。原始值仍在场，但那两处的墙钟不足以断定校准是否正确——"
+                "**读这些档位的数字时要把它算进去**",
+                "tiers_us": tiers,
+            }
+        )
+
     return caveats
 
 
@@ -405,7 +433,7 @@ def build_model(
             else _unmeasured_semantics(),
         },
         "unfavorable": _unfavorable(result, subject),
-        "caveats": _caveats(units, result.get("verification", {})),
+        "caveats": _caveats(units, result.get("verification", {}), result.get("self_check", {})),
         "absolute": {
             "note": result.get("run", {}).get("absolute_note"),
             "process_isolation": result.get("process_isolation", {}),

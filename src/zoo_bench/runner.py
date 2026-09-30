@@ -305,13 +305,30 @@ def _relative_block(units: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: 低于该执行体时长（秒）的档位**不参与偏差判定**。
+#:
+#: **按实测定**：CI 上 40 µs 档在并发度 1 下实测 65 µs（+63.1%），恰好越过容差——而并发度 1
+#: 已经排除了排队因素。剩下的是调度颗粒度：几十微秒的窗口里任何一次抢占都会显著抬高墙钟，
+#: 在共享 VM 上这不可控。故低于 100 µs 的档位只如实记录、不判否。
+#:
+#: 鉴别力不受影响：该判据要抓的"工作量写错一倍"是 +100% 量级的系统性错误，在 ≥100 µs 的档位上
+#: 照样抓得住。
+BODY_DEVIATION_MIN_TIER_SECONDS = 100e-6
+
+
 def grade_body_deviation(units: list[dict[str, Any]]) -> dict[str, Any]:
     """执行体档位偏差的分档判定。
 
-    **只有最低并发度那一档参与判否**。理由来自实测：CI 首跑的诊断显示偏差随并发度单调放大
-    （同一档 10000 µs，并发度 4/16/64 分别偏 +89%/+150%/+457%），而并发度 1 全部通过。执行体
-    测的是**墙钟**，并发超过环境实际容量时它被调度推迟——那是排队，不是工作量，也不是测量错误。
-    真正的校准错误会在**所有**并发度上同样地表现出来，故最低档足以判定。
+    **只在"最低并发度且档位足够长"的那些单元上判否**，两条线各有实测依据：
+
+    - **并发度**：CI 诊断显示偏差随并发度单调放大（同一档 10000 µs，并发度 4/16/64 分别偏
+      +89%/+150%/+457%），而并发度 1 全部通过。执行体测的是墙钟，并发超过环境实际容量时被调度
+      推迟——那是排队，不是工作量。
+    - **档位长度**：40 µs 档在并发度 1 下仍实测 +63.1%。排除排队后剩下的是调度颗粒度——几十
+      微秒的窗口里一次抢占就足够抬高它。
+
+    两种情况都不是测量错误，而真正的校准错误（工作量写错一倍）会在**所有**档位、所有并发度上
+    同样表现，故最低并发度上的长档位足以判定。
 
     Args:
         units: 测量单元（含 ``checks.body`` 的那些）。
@@ -330,17 +347,23 @@ def grade_body_deviation(units: list[dict[str, Any]]) -> dict[str, Any]:
             "concurrency": unit["spec"]["concurrency"],
             **unit["checks"]["body"],
         }
-        check["gated"] = check["concurrency"] == lowest
+        long_enough = float(check["body_target_seconds"]) >= BODY_DEVIATION_MIN_TIER_SECONDS
+        check["gated"] = check["concurrency"] == lowest and long_enough
+
         if not check["gated"] and not check["body_deviation_ok"]:
             check["note"] = (
                 "并发度高于最低档：墙钟受调度推迟影响，偏差随并发度增长说明是环境超订而非"
-                "校准错误，故不参与判定（原值已如实记录）"
+                "校准错误（原值已如实记录）"
+                if check["concurrency"] != lowest
+                else "档位过短：几十微秒的窗口在共享 runner 上受调度颗粒度支配，不足以判定"
+                "（原值已如实记录）"
             )
         checks.append(check)
 
     return {
         "checks": checks,
         "gated_concurrency": lowest,
+        "min_gated_tier_seconds": BODY_DEVIATION_MIN_TIER_SECONDS,
         "ok": all(check["body_deviation_ok"] for check in checks if check["gated"]),
     }
 
