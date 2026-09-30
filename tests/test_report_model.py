@@ -250,7 +250,10 @@ def test_model_declares_the_driven_level() -> None:
 
 
 def test_model_annotates_incomparable_and_costing_caveats() -> None:
-    """4.9：不同架构的对照与含额外成本的对照，各自带口径说明。"""
+    """4.9：不同架构的对照与含额外成本的对照，各自带口径说明。
+
+    每个方案**自己声明的口径**都要进报告——按关键字替读者挑哪条重要，代价是漏掉没被命中的。
+    """
     units = [
         _unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003, meta={"drive_level": "派发层"}),
         _unit(
@@ -270,7 +273,10 @@ def test_model_annotates_incomparable_and_costing_caveats() -> None:
     ]
     model = build_model(_result(units))
     kinds = {caveat["kind"] for caveat in model["caveats"]}
-    assert {"不可直接对标", "口径偏差", "被测层级"} <= kinds
+    assert {"不可直接对标", "口径说明", "被测层级"} <= kinds
+
+    annotated = {caveat["adapter"] for caveat in model["caveats"] if caveat.get("adapter")}
+    assert {"celery", "process_pool"} <= annotated
 
 
 def test_model_reports_failed_units_as_a_caveat() -> None:

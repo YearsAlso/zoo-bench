@@ -18,28 +18,29 @@ class BareThreadAdapter(BaseAdapter):
 
     name = "bare_thread"
     tier = Tier.BARE
-    notes = "每任务派生一个 threading.Thread，无池化、无复用；线程创建成本计入端到端"
+    notes = (
+        "每任务派生一个 threading.Thread，无池化、无复用；线程创建成本计入端到端。"
+        "收集执行体自报耗时用无锁的 list.append（GIL 下本身原子）——"
+        "**插桩不得给某一档加别档没有的成本**，否则对照就成了插桩的对照"
+    )
 
     def setup(self, *, workers: int) -> None:
         # workers 对本档无约束作用：并发度等于提交数。保留参数以符合契约。
         self._threads: list[threading.Thread] = []
         self._durations: list[float] = []
         self._errors: list[BaseException] = []
-        self._lock = threading.Lock()
 
     def submit(self, body: Callable[[], float]) -> None:
         def _run() -> None:
-            # 线程里的异常不会自动传到调用方；不存下来就会变成"少一条结果"的静默失败，
-            # 而契约要求异常向上传播
+            # 异常与耗时都直接 append：**刻意不加锁**。list.append 在 GIL 下是原子的，而每任务
+            # 一次加锁会让本档在并发度 64 时付出 64 个线程争一把锁的代价——那是插桩的成本，
+            # 不是"每任务一线程"这个方案的。混进去，对照就成了插桩的对照。
             try:
                 value = body()
             except BaseException as exc:
-                with self._lock:
-                    self._errors.append(exc)
+                self._errors.append(exc)
                 return
-
-            with self._lock:
-                self._durations.append(value)
+            self._durations.append(value)
 
         thread = threading.Thread(target=_run)
         thread.start()
@@ -49,13 +50,13 @@ class BareThreadAdapter(BaseAdapter):
         pending, self._threads = self._threads, []
         for thread in pending:
             thread.join()
-        with self._lock:
-            errors, self._errors = self._errors, []
-            out, self._durations = self._durations, []
+
+        errors, self._errors = self._errors, []
+        durations, self._durations = self._durations, []
 
         if errors:
             raise errors[0]
-        return out
+        return durations
 
     def teardown(self) -> None:
         for thread in self._threads:

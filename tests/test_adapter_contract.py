@@ -60,6 +60,25 @@ def test_subject_goes_through_the_same_contract() -> None:
     assert subject.drive_level.strip()
 
 
+def test_bare_thread_does_not_lock_per_task() -> None:
+    """每任务一次加锁是**插桩成本**，不是"每任务一线程"这个方案的成本。
+
+    并发度 64 时 64 个线程争一把锁，那份代价会被读成该方案的开销——对照就变成插桩的对照。
+    这条守卫防的是它被加回来：`list.append` 在 GIL 下本身原子，不需要锁。
+    """
+    source = (_PACKAGE_ADAPTERS / "bare_thread.py").read_text(encoding="utf-8")
+
+    assert "Lock(" not in source, "每任务加锁会把插桩成本算进该方案"
+    assert "self._durations.append(value)" in source, "耗时应直接 append"
+
+
+def test_every_adapter_declares_its_own_caliber_notes() -> None:
+    """每个适配器都要自述口径——报告里的口径说明直接取自它，而不是渲染层另写一份。"""
+    for name, adapter in sorted(registry.registered().items()):
+        assert adapter.notes.strip(), f"{name} 未声明口径说明"
+        assert isinstance(adapter.tier, Tier), f"{name} 的档位不合法"
+
+
 def test_register_rejects_non_adapter() -> None:
     with pytest.raises(TypeError):
         registry.register(int)  # type: ignore[arg-type]

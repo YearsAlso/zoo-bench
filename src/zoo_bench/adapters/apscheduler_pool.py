@@ -30,7 +30,9 @@ class APSchedulerAdapter(BaseAdapter):
     tier = Tier.ECOSYSTEM
     notes = (
         "APScheduler 的定时作业模型，含作业登记与触发判定成本；"
-        "该库会吞掉作业内异常，本档已在 drain 时重新抛出"
+        "该库会吞掉作业内异常，本档已在 drain 时重新抛出。"
+        "**口径说明**：该库不提供作业完成通知，故完成信号由本档的 Condition 给出，"
+        "每任务一次通知的开销计入其端到端"
     )
 
     def setup(self, *, workers: int) -> None:

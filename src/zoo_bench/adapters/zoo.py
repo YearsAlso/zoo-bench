@@ -88,7 +88,9 @@ class ZooAdapter(BaseAdapter):
     notes = (
         "端到端终点为「worker 完成并在飞表注销」；框架随后的 worker_report（把 WorkerResult "
         "交给事件反应器）不计入——实测该调用在 0.6.0 上必抛 AttributeError"
-        "（dispatch 按 reactor_name 而非 topic 查反应器）"
+        "（dispatch 按 reactor_name 而非 topic 查反应器）。"
+        "**口径说明**：完成信号由本档的 Condition 给出，每任务一次通知的开销计入其端到端；"
+        "该方向的偏差使被测框架看起来更慢，即对被测框架不利而非有利"
     )
 
     def setup(self, *, workers: int) -> None:

@@ -223,22 +223,24 @@ def _caveats(units: list[dict[str, Any]], verification: dict[str, Any]) -> list[
     }
     caveats.extend({"kind": "被测层级", "text": level} for level in sorted(drive_levels))
 
+    # 每个方案**自己声明的口径**都进报告。原先按关键字挑（只挑含"序列化"的）是刻意的省事，
+    # 但那是"我替读者判断哪条重要"，而代价是漏掉没被关键字命中的成本说明。
+    seen: set[str] = set()
     for unit in _successful(units):
-        if unit["adapter"].get("comparable") is False and unit["adapter"].get("notes"):
-            caveats.append(
-                {
-                    "kind": "不可直接对标",
-                    "adapter": unit["spec"]["adapter"],
-                    "text": unit["adapter"]["notes"],
-                }
-            )
-            break
-
-    for unit in _successful(units):
+        adapter = unit["spec"]["adapter"]
         notes = unit["adapter"].get("notes", "")
-        if "序列化" in notes:
-            caveats.append({"kind": "口径偏差", "adapter": unit["spec"]["adapter"], "text": notes})
-            break
+        if not notes or adapter in seen:
+            continue
+        seen.add(adapter)
+        caveats.append(
+            {
+                "kind": "不可直接对标"
+                if unit["adapter"].get("comparable") is False
+                else "口径说明",
+                "adapter": adapter,
+                "text": notes,
+            }
+        )
 
     failed = [unit for unit in units if unit["status"] != "ok"]
     if failed:
