@@ -28,6 +28,9 @@ dependencies = [
     "zoo-framework",
     "apscheduler>=3.10",
     "pyyaml>=6.0",
+    # 报告渲染（design D11）：matplotlib 出图，reportlab 排版 PDF
+    "matplotlib>=3.8",
+    "reportlab>=4.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +39,8 @@ celery = ["celery>=5.3"]
 dev = [
     "pytest>=7.4.0",
     "ruff>=0.1.0",
+    # 从导出的 PDF 里抽文字，验证中文确实渲染出来了（tasks 4.12）
+    "pypdf>=4.0",
 ]
 
 [tool.hatch.build.targets.wheel]
