@@ -16,6 +16,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 #: 记录版本用于核对"报告里的依赖与实测时是否一致"的包。只列本 harness 与被测框架的
@@ -94,19 +95,29 @@ def cpu_model() -> tuple[str | None, str]:
 
 
 def harness_commit() -> tuple[str | None, str]:
-    """zoo-bench 自身的 commit 标识及其来源。"""
+    """zoo-bench 自身的 commit 标识及其来源。
+
+    **依次尝试多个根**：当前工作目录优先，其次包所在目录。实测踩过这个坑——只取包所在目录时，
+    非 editable 安装（CI 就是）那里是 site-packages、不是 git 仓库，报告里于是写着
+    `harness commit: None`，而"这份报告由哪个 commit 产出"正是它要回答的问题。
+    """
     git = shutil.which("git")
     if git is None:
         return None, "找不到 git"
-    completed = subprocess.run(
-        [git, "-C", _PACKAGE_ROOT, "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        return None, f"git rev-parse 返回 {completed.returncode}"
-    return completed.stdout.strip(), "git rev-parse HEAD"
+
+    attempts: list[str] = []
+    for root in (Path.cwd(), Path(_PACKAGE_ROOT)):
+        completed = subprocess.run(
+            [git, "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            return completed.stdout.strip(), f"git -C {root} rev-parse HEAD"
+        attempts.append(str(root))
+
+    return None, f"以下路径都不是 git 仓库：{attempts}"
 
 
 def collect(command: list[str] | None = None) -> dict[str, Any]:

@@ -139,23 +139,33 @@ def _relative_turnings(result: dict[str, Any], subject: str | None) -> list[dict
     return turnings
 
 
-def _summary(crossings: list[dict[str, Any]], turnings: list[dict[str, Any]]) -> list[str]:
-    """结论摘要的句子。三个后端都直接用这几句，避免各写一遍导致措辞漂移。"""
+def _summary(
+    crossings: list[dict[str, Any]], turnings: list[dict[str, Any]], subject: str | None
+) -> list[str]:
+    """结论摘要的句子。三个后端都直接用这几句，避免各写一遍导致措辞漂移。
+
+    **开销交叉点只说被测框架那一行**。实测踩过这个坑：取所有方案里的最小值，于是头条写着
+    "约 40 µs 时开销降到 15% 以下"——那是某个对照方案的数字，而被测框架自己是 2700 µs。
+    头条说错了对象，整份报告的结论就被误读了。
+    """
     lines: list[str] = []
 
     subject_crossings = [
-        crossing for crossing in crossings if crossing["first_tier_at_or_below_threshold_us"] is not None
+        crossing
+        for crossing in crossings
+        if crossing["adapter"] == subject
+        and crossing["first_tier_at_or_below_threshold_us"] is not None
     ]
     if subject_crossings:
         shortest = min(crossing["first_tier_at_or_below_threshold_us"] for crossing in subject_crossings)
         lines.append(
-            f"执行体时长达到约 {shortest:g} µs 及以上时，框架开销占端到端的比例降到 "
-            f"{OVERHEAD_THRESHOLD:.0%} 以下；短于此档位，选用本框架的主要代价就是框架开销本身。"
+            f"被测框架 {subject} 的执行体时长达到约 {shortest:g} µs 及以上时，其框架开销占端到端的"
+            f"比例降到 {OVERHEAD_THRESHOLD:.0%} 以下；短于此档位，选用它的主要代价就是框架开销本身。"
         )
     else:
         tiers = sorted({tier for crossing in crossings for tier in crossing["tiers_us"]})
         lines.append(
-            "在所测档位范围内，没有任何一档的框架开销占比降到 "
+            f"在所测档位范围内，被测框架 {subject} 没有任何一档的框架开销占比降到 "
             f"{OVERHEAD_THRESHOLD:.0%} 以下；所测档位为 {tiers}。"
         )
 
@@ -380,7 +390,7 @@ def build_model(
             "overhead_threshold": OVERHEAD_THRESHOLD,
             "overhead_crossings": crossings,
             "relative_turnings": turnings,
-            "summary": _summary(crossings, turnings),
+            "summary": _summary(crossings, turnings, subject),
             "note": "单点加速比没有选型含义；结论以“多大的执行体时长下选哪个方案”表述"
             "（同一份框架开销，在 40 µs 的任务上占七成，在 10 ms 上只占百分之几）",
         },

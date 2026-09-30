@@ -207,6 +207,25 @@ def test_environment_collector_never_fabricates_a_cpu_model() -> None:
         assert any(marker in source for marker in ("取", "失败", "不支持", "没有")), source
 
 
+def test_harness_commit_resolves_from_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``harness commit`` 必须能从**工作目录**解析出来。
+
+    真事故的守卫：只取包所在目录时，非 editable 安装（CI 就是）那里是 site-packages、不是
+    git 仓库，报告里于是写着 `harness commit: None`——而"这份报告由哪个 commit 产出"正是这
+    一项要回答的问题。
+    """
+    from zoo_bench import environment
+
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(repo_root)
+
+    commit, source = environment.harness_commit()
+    assert commit, f"工作目录在仓库内时应能取到 commit，实际：{source}"
+    assert len(commit) == 40
+
+
 # ------------------------------------------------------------------ 4.8 / 4.9 声明与标注
 
 
@@ -268,11 +287,11 @@ def test_model_reports_failed_units_as_a_caveat() -> None:
 
 
 def test_conclusion_names_the_tier_where_overhead_drops_below_threshold() -> None:
-    # 40 µs 档开销占比高（40/300），2700 µs 档开销占比极低
+    # 40 µs 档开销占比高（40/300），300 µs 档已低于 15%
     units = [
-        _unit("zoo", tier_us=40, e2e_per_task=0.000080, body=0.000040),
-        _unit("zoo", tier_us=300, e2e_per_task=0.000340, body=0.000300),
-        _unit("zoo", tier_us=2700, e2e_per_task=0.002740, body=0.002700),
+        _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040),
+        _subject_unit(tier_us=300, e2e_per_task=0.000340, body=0.000300),
+        _subject_unit(tier_us=2700, e2e_per_task=0.002740, body=0.002700),
     ]
     model = build_model(_result(units))
     crossing = model["conclusion"]["overhead_crossings"][0]
@@ -282,9 +301,30 @@ def test_conclusion_names_the_tier_where_overhead_drops_below_threshold() -> Non
     assert any("300" in line for line in model["conclusion"]["summary"])
 
 
+def test_conclusion_headline_is_about_the_subject_not_the_best_baseline() -> None:
+    """头条交叉点必须是被测框架那一行。
+
+    实测踩过这个坑：取所有方案里的最小值，于是头条写着"约 40 µs 时开销降到 15% 以下"——那是
+    某个对照方案的数字，而被测框架自己是 2700 µs。**头条说错了对象，整份报告的结论就被误读。**
+    """
+    units = [
+        _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040),
+        _subject_unit(tier_us=2700, e2e_per_task=0.002715, body=0.002700),
+        # 对照方案在最短档就已远低于阈值——若实现取最小值，头条会变成 40
+        _unit("bare_thread", tier_us=40, e2e_per_task=0.000080, body=0.000043),
+    ]
+    model = build_model(_result(units))
+
+    headline = model["conclusion"]["summary"][0]
+    assert "zoo" in headline, f"头条必须点名被测框架：{headline}"
+    assert "2700" in headline, f"头条该用被测框架的交叉点：{headline}"
+
+
 def test_conclusion_admits_absence_of_a_crossing() -> None:
     """所测档位内没有一档低于阈值时如实说明，**不硬造一个交叉点**。"""
-    units = [_unit("zoo", tier_us=tier, e2e_per_task=0.000060, body=0.000040) for tier in (40, 300)]
+    units = [
+        _subject_unit(tier_us=tier, e2e_per_task=0.000060, body=0.000040) for tier in (40, 300)
+    ]
     model = build_model(_result(units))
 
     crossing = model["conclusion"]["overhead_crossings"][0]
