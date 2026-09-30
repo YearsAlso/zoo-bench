@@ -46,6 +46,9 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/zoo_bench"]
 
+[project.scripts]
+zoo-bench = "zoo_bench.cli:main"
+
 # ============================================
 # Ruff 配置（与框架仓库保持同一套规则）
 # ============================================

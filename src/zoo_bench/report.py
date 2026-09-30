@@ -344,7 +344,8 @@ def build_model(
 
     Args:
         result: :func:`zoo_bench.runner.measure_matrix` 的返回值。
-        environment: 环境自述；None 时模型里标注为缺失（渲染层应拒绝发布）。
+        environment: 环境自述；None 时取 ``result["environment"]``（由 ``zoo-bench run``
+            采集并随留档存入），两者都没有时模型里标为缺失——渲染层据此拒绝发布。
         source: 原始数据的来源信息（路径、框架规格、留档时间）。
         semantics: 调度语义维度的测量结果。**缺省时取 ``result["semantics"]``**（由
             :func:`zoo_bench.runner.measure_matrix` 的探查产出）；两者都没有时如实标注为
@@ -360,11 +361,14 @@ def build_model(
     turnings = _relative_turnings(result, subject)
 
     resolved_semantics = semantics if semantics is not None else result.get("semantics")
+    resolved_environment = (
+        environment if environment is not None else result.get("environment")
+    )
 
     return {
         "schema": MODEL_SCHEMA,
         "source": source,
-        "environment": environment,
+        "environment": resolved_environment,
         "run": result.get("run", {}),
         "load": {
             "is_stand_in": True,
