@@ -16,10 +16,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from _bodies import BoomBody, SlotBody, expected_durations, match_one_to_one
+from _bodies import BoomBody
 
 from zoo_bench.adapters import registry
 from zoo_bench.adapters.base import BaseAdapter, OptionalDependencyMissing, Tier
+from zoo_bench.workloads.identity import SlotBody, expected_durations, match_one_to_one
 
 CONCURRENCY = 4
 BATCH = 12

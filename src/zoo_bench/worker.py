@@ -1,0 +1,164 @@
+"""子进程侧入口：在一个**全新解释器**里跑完一个测量单元或一次等价性验证。
+
+为什么用独立解释器而不是 ``multiprocessing``：
+
+- **隔离更彻底**。被测框架的 ``@cage`` 单例、``reactor_map``、gevent 的 monkey patch、
+  asyncio 事件循环都不会与本进程或其他单元共享（design D4）。
+- **规格只用 JSON 传递**，不必给"spec 必须可 pickle"这类隐性约束。
+- **失败可诊断**。子进程的 stderr 能被完整捕获，失败时把真实堆栈收进结果，而不是只留一句
+  "子进程异常退出"。
+
+用法（由 :mod:`zoo_bench.runner` 调用，不面向人）::
+
+    python -m zoo_bench.worker <verify|measure> <spec-json> <out-path>
+
+退出码 0 表示结果已写入 ``out-path``；非 0 表示失败，原因在 stderr。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+from typing import Any
+
+from .adapters import registry
+from .workloads.body import body_for_tier
+from .workloads.identity import SlotBody, expected_durations, match_one_to_one
+
+#: 等价性验证的批量：够看出"丢任务"与"重复执行"，又不至于把每个适配器都拖慢。
+VERIFY_BATCH = 4
+
+
+def _load_adapter(spec: dict[str, Any]) -> type:
+    """装载内置档位与此单元声明的外部模块，再取出适配器类。"""
+    registry.load_builtins()
+    extra = list(spec.get("extra_modules") or [])
+    if extra:
+        registry.load_external(extra)
+    return registry.get(spec["adapter"])
+
+
+def verify_equivalence(spec: dict[str, Any]) -> dict[str, Any]:
+    """断言"提交 N 个执行体、全部执行且各执行一次"（spec: adapter-contract）。"""
+    adapter_cls = _load_adapter(spec)
+    concurrency = int(spec["concurrency"])
+
+    bodies = [SlotBody(index) for index in range(VERIFY_BATCH)]
+    expected = expected_durations(VERIFY_BATCH)
+
+    adapter = adapter_cls()
+    adapter.setup(workers=concurrency)
+    try:
+        for body in bodies:
+            adapter.submit(body)
+        observed = adapter.drain()
+    finally:
+        adapter.teardown()
+
+    return {
+        "adapter": adapter_cls.name,
+        "ok": match_one_to_one(observed, expected),
+        "expected_count": VERIFY_BATCH,
+        "observed_count": len(observed),
+        "expected_durations": expected,
+        "observed_durations": observed,
+    }
+
+
+def _measure_round(adapter: Any, body: Any, batch: int) -> dict[str, Any]:
+    """一轮：提交 ``batch`` 个执行体、等到全部完成，记录墙钟与各执行体自报耗时。"""
+    start = time.perf_counter()
+    for _ in range(batch):
+        adapter.submit(body)
+    body_seconds = adapter.drain()
+    return {
+        "batch": batch,
+        "wall_seconds": time.perf_counter() - start,
+        "body_seconds": list(body_seconds),
+    }
+
+
+def measure_unit(spec: dict[str, Any]) -> dict[str, Any]:
+    """完成一个测量单元的预热与正式采样。"""
+    adapter_cls = _load_adapter(spec)
+    concurrency = int(spec["concurrency"])
+
+    body = body_for_tier(float(spec["body_tier_us"]))
+    adapter = adapter_cls()
+    rounds: list[dict[str, Any]] = []
+
+    # 计时区间之外：子进程派生、依赖导入、线程池创建都发生在 setup 里
+    adapter.setup(workers=concurrency)
+    try:
+        for _ in range(int(spec["warmup_rounds"])):
+            _measure_round(adapter, body, concurrency)
+        for index in range(int(spec["measured_rounds"])):
+            record = _measure_round(adapter, body, concurrency)
+            record["round"] = index
+            rounds.append(record)
+    finally:
+        adapter.teardown()
+
+    return {
+        "pid": os.getpid(),
+        "body_iterations": body.iterations,
+        "body_checksum": body.checksum,
+        "rounds": rounds,
+        "adapter": {
+            "name": adapter_cls.name,
+            "tier": str(adapter_cls.tier),
+            "comparable": adapter_cls.comparable,
+            "notes": adapter_cls.notes,
+            "drive_level": adapter_cls.drive_level,
+        },
+    }
+
+
+_KINDS = {"verify": verify_equivalence, "measure": measure_unit}
+
+_USAGE = "用法: python -m zoo_bench.worker <verify|measure> <spec-json> <out-path>"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """子进程主入口。
+
+    Args:
+        argv: 命令行参数；None 时取 ``sys.argv[1:]``。
+
+    Returns:
+        进程退出码：0 表示结果已落盘，2 表示用法错误，1 表示执行失败。
+    """
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) != 3:
+        print(_USAGE, file=sys.stderr)
+        return 2
+
+    kind, spec_json, out_path = arguments
+    task = _KINDS.get(kind)
+    if task is None:
+        print(f"未知的 kind {kind!r}；可用：{sorted(_KINDS)}", file=sys.stderr)
+        return 2
+
+    try:
+        spec = json.loads(spec_json)
+    except json.JSONDecodeError as exc:
+        print(f"spec 不是合法 JSON：{exc}", file=sys.stderr)
+        return 2
+
+    try:
+        payload = task(spec)
+    except BaseException:
+        # 真实堆栈进 stderr，供父进程收进失败原因
+        traceback.print_exc()
+        return 1
+
+    Path(out_path).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
