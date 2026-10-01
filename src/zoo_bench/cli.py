@@ -22,7 +22,7 @@ from typing import Any
 from . import compare, environment, storage
 from . import matrix as matrix_module
 from .render import compare as compare_renderer
-from .render import html as html_renderer
+from .render import report as report_renderer
 from .report import OVERHEAD_THRESHOLD, build_model
 from .runner import (
     DEFAULT_MEASURED_ROUNDS,
@@ -184,11 +184,15 @@ def render_command(args: argparse.Namespace) -> int:
             }
         )
 
-    outcome = html_renderer.render(model, args.out, threshold=OVERHEAD_THRESHOLD)
+    outcome = report_renderer.render(model, args.out, threshold=OVERHEAD_THRESHOLD)
     print(f"报告：{outcome['html']}")
     print(f"Markdown：{outcome['markdown']}")
-    if outcome["font"]:
-        print(f"图表字体：{outcome['font']}")
+    print(f"PDF：{outcome['pdf']}")
+    font = outcome.get("font") or {}
+    if font.get("path"):
+        print(f"PDF 字体：{font['path']}（face {font.get('face_index')}）")
+        for skipped in font.get("skipped", []):
+            print(f"  跳过的候选：{skipped}")
     return 0
 
 
@@ -264,13 +268,18 @@ def index_command(args: argparse.Namespace) -> int:
     site.mkdir(parents=True, exist_ok=True)
 
     entries = [
-        (slug, f"{slug}/index.html")
+        (slug, f"{slug}/index.html", f"{slug}/report.pdf")
         for slug in storage.available_frameworks(root=args.results)
         if (site / slug / "index.html").is_file()
     ]
 
     if entries:
-        items = "\n".join(f'<li><a href="{href}">{slug}</a></li>' for slug, href in entries)
+        items = "\n".join(
+            f'<li><a href="{report}">{slug}</a>'
+            + (f' · <a href="{pdf}">PDF</a>' if (site / pdf).is_file() else "")
+            + "</li>"
+            for slug, report, pdf in entries
+        )
         body = f"<ul>{items}</ul>"
     else:
         body = "<p>还没有任何已渲染的报告。</p>"

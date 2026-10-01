@@ -6,11 +6,9 @@ HTML 与 PDF 说的必然是同一件事，各写一遍措辞是必然的漂移�
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block, build_blocks
-from .charts import render_all
 
 
 def _table(headers: tuple[str, ...], rows: tuple[tuple[str, ...], ...]) -> str:
@@ -62,28 +60,3 @@ def render_markdown(
         Markdown 文本。
     """
     return blocks_to_markdown(build_blocks(model, charts, figures_rel=figures_rel))
-
-
-def render(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> dict[str, Any]:
-    """出图表并写出 Markdown 报告。
-
-    Args:
-        model: 报告模型。
-        outdir: 输出目录；图表写入其下的 ``figures/``。
-        threshold: 开销阈值（传给图表）。
-
-    Returns:
-        ``{"report": 报告路径, "charts": [...], "font": 字体路径}``。
-    """
-    directory = Path(outdir)
-    directory.mkdir(parents=True, exist_ok=True)
-
-    charts = render_all(model, directory / "figures", threshold=threshold)
-    report_path = directory / "report.md"
-    report_path.write_text(render_markdown(model, charts), encoding="utf-8")
-
-    return {
-        "report": str(report_path),
-        "charts": charts,
-        "font": charts[0]["font"] if charts else None,
-    }

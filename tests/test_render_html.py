@@ -17,6 +17,7 @@ from zoo_bench import matrix as matrix_module
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import html as html_renderer
 from zoo_bench.render import markdown as markdown_renderer
+from zoo_bench.render import report as report_renderer
 from zoo_bench.runner import ABSOLUTE_NOTE
 
 FRAMEWORK = "zoo-framework==9.9.9"
@@ -222,13 +223,18 @@ def test_time_units_are_actually_converted() -> None:
     assert blocks_module.format_seconds(None) == "—"
 
 
-def test_render_writes_both_formats(tmp_path: Path) -> None:
-    """站点要 HTML，diff 与复用要 Markdown——一次渲染都写出来。"""
-    outcome = html_renderer.render(_model(), tmp_path, threshold=0.15)
+def test_render_writes_every_format(tmp_path: Path) -> None:
+    """站点要 HTML、diff 与复用要 Markdown、分发要 PDF——一次渲染都写出来。
+
+    三种格式都从同一份块列表序列化，故数字必然一致（design D11）。
+    """
+    outcome = report_renderer.render(_model(), tmp_path, threshold=0.15)
 
     assert Path(outcome["html"]).is_file()
     assert Path(outcome["markdown"]).is_file()
+    assert Path(outcome["pdf"]).is_file()
     assert Path(outcome["html"]).name == "index.html", "站点入口必须是 index.html"
+    assert outcome["font"]["path"], "导出必须记录所用字体，使「中文为何能显示」可复核"
 
 
 # ------------------------------------------------------------------ 站点首页

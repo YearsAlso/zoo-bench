@@ -25,24 +25,31 @@ CANDIDATES: tuple[str, ...] = (
     r"C:\Windows\Fonts\Deng.ttf",
     r"C:\Windows\Fonts\msyh.ttc",
     r"C:\Windows\Fonts\simsun.ttc",
-    # Debian / Ubuntu 的 fonts-noto-cjk
+    # Debian / Ubuntu 的 fonts-noto-cjk（**CFF 轮廓**：matplotlib 能用，reportlab 不能）
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-    # 文泉驿（部分发行版默认装）
+    # TrueType 轮廓的 CJK 字体：**PDF 侧必须用这类**，见 find_pdf_font
     "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/truetype/wqy/wqy-microhei.ttf",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    "/usr/share/fonts/truetype/arphic/ukai.ttc",
     # macOS
     "/System/Library/Fonts/PingFang.ttc",
     "/Library/Fonts/Arial Unicode.ttf",
 )
 
+#: TTC 是字体集合，逐个 face 试注册的上限。
+MAX_TTC_FACES = 16
+
 _INSTALL_HINT = (
     "找不到可用的中文字体，导出会得到方框或丢字。请安装以下任一并重试：\n"
-    "  Debian/Ubuntu:  sudo apt-get install -y fonts-noto-cjk\n"
-    "  Fedora/RHEL:    sudo dnf install -y google-noto-sans-cjk-fonts\n"
+    "  Debian/Ubuntu:  sudo apt-get install -y fonts-noto-cjk fonts-wqy-zenhei\n"
+    "  Fedora/RHEL:    sudo dnf install -y google-noto-sans-cjk-fonts wqy-zenhei-fonts\n"
     "  macOS:          系统自带 PingFang，通常无需安装\n"
-    f"  或设置环境变量 {FONT_ENV} 指向一个中文字体文件"
+    f"  或设置环境变量 {FONT_ENV} 指向一个中文字体文件\n"
+    "**PDF 另需 TrueType 轮廓的字体**：fonts-noto-cjk 是 CFF 轮廓，matplotlib 能用但\n"
+    "reportlab（PDF）不能嵌——故上面一并装了 fonts-wqy-zenhei"
 )
 
 
@@ -129,11 +136,53 @@ def font_covers(font: Path, text: str) -> tuple[bool, list[str]]:
     return not missing, missing
 
 
-def find_cjk_font_covering(text: str, candidates: list[str] | None = None) -> Path:
-    """解析出**能覆盖 ``text`` 全部字符**的中文字体。
+def register_for_reportlab(font: Path) -> dict[str, object]:
+    """把字体注册进 reportlab，返回 ``{"name": 注册名, "face_index": ...}``。
 
-    与 :func:`find_cjk_font` 的区别：那个只要求文件存在，这个要求认得报告实际要写的字。用于
-    图表这类"缺字只会静默变方框"的场景。
+    **TTC 要按 face 索引注册**（它是字体集合），逐个 face 试到成功为止。**CFF 轮廓的字体
+    （如 fonts-noto-cjk 的 .ttc/.otf）注册会失败**——reportlab 只能嵌 TrueType 轮廓，这是它
+    的限制而不是配置问题。故本函数把"能不能嵌"当作选字体的判据之一，见 :func:`find_pdf_font`。
+
+    Args:
+        font: 字体文件路径。
+
+    Returns:
+        ``{"name": str, "face_index": int | None, "path": str}``。
+
+    Raises:
+        CjkFontUnavailable: 该字体无法被 reportlab 注册（例如 CFF 轮廓、或集合里所有 face 都失败）。
+    """
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    attempts: list[str] = []
+    indices: list[int | None] = (
+        list(range(MAX_TTC_FACES)) if font.suffix.lower() == ".ttc" else [None]
+    )
+
+    for index in indices:
+        name = f"zoo-bench-cjk-{index}" if index is not None else "zoo-bench-cjk"
+        try:
+            pdfmetrics.registerFont(TTFont(name, str(font), subfontIndex=index or 0))
+        except Exception as exc:
+            attempts.append(f"face {index}: {type(exc).__name__}: {exc}")
+            continue
+
+        # 把 bold / italic 全映射到同一张脸：否则 `<b>` 会去找拉丁粗体，中文就变成方框——
+        # 代价是 PDF 里粗体不再有视觉区分，这是可接受的取舍（graph 里另有结构提示）
+        pdfmetrics.registerFontFamily(name, normal=name, bold=name, italic=name, boldItalic=name)
+        return {"name": name, "face_index": index, "path": str(font)}
+
+    raise CjkFontUnavailable(
+        f"字体 {font} 无法被 reportlab 注册（reportlab 只能嵌 TrueType 轮廓，CFF 轮廓的字体"
+        f"如 fonts-noto-cjk 不行）。已尝试：{attempts[:3]}\n{_INSTALL_HINT}"
+    )
+
+
+def find_cjk_font_covering(text: str, candidates: list[str] | None = None) -> Path:
+    """解析出**能覆盖 ``text`` 全部字符**的中文字体（供 matplotlib 出图用）。
+
+    matplotlib 能读 CFF 轮廓的字体，故这里只管"认不认得这些字"。
 
     Args:
         text: 报告实际会渲染的文本。
@@ -160,4 +209,44 @@ def find_cjk_font_covering(text: str, candidates: list[str] | None = None) -> Pa
     raise CjkFontUnavailable(
         "候选字体都存在，但没有一个覆盖报告要渲染的全部字符。"
         f"缺失情况：{gaps}\n{_INSTALL_HINT}"
+    )
+
+
+def find_pdf_font(text: str, candidates: list[str] | None = None) -> dict[str, object]:
+    """解析出**既能覆盖 ``text``、又能被 reportlab 嵌入**的中文字体。
+
+    两个条件都必要：覆盖不够会出方框，嵌不进去则 PDF 根本出不来。CFF 轮廓的字体在这里会被
+    跳过并记下原因，而不是抛出去让调用方猜。
+
+    Args:
+        text: PDF 实际会渲染的文本。
+        candidates: 覆盖候选列表（测试用）。
+
+    Returns:
+        :func:`register_for_reportlab` 的返回值，另加 ``"skipped"`` 记录被跳过的候选与原因。
+
+    Raises:
+        CjkFontUnavailable: 没有候选文件存在，或没有一个同时满足两个条件。
+    """
+    tried = candidates if candidates is not None else font_candidates()
+    existing = [path for path in tried if Path(path).is_file()]
+    if not existing:
+        raise CjkFontUnavailable(f"{_INSTALL_HINT}\n已尝试：{list(tried)}")
+
+    skipped: list[str] = []
+    for path in existing:
+        covered, missing = font_covers(Path(path), text)
+        if not covered:
+            skipped.append(f"{path}：缺字符 {missing[:8]}")
+            continue
+        try:
+            registered = register_for_reportlab(Path(path))
+        except CjkFontUnavailable as exc:
+            skipped.append(f"{path}：{exc}".splitlines()[0])
+            continue
+        return {**registered, "skipped": skipped}
+
+    raise CjkFontUnavailable(
+        "候选字体都存在，但没有一个同时满足「覆盖报告文本」与「能被 reportlab 嵌入」。\n"
+        "逐条原因：\n  " + "\n  ".join(skipped) + f"\n{_INSTALL_HINT}"
     )
