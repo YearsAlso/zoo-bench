@@ -56,8 +56,8 @@
 ## 6. 框架仓库侧对接
 
 - [x] 6.1 在框架仓库 `.gitignore` 中增加 `/zoo-bench/`（本地并列克隆，见 design D1）；验证：`git status` 中不出现 `zoo-bench/`。**已完成并实测**：框架仓库 `.gitignore` 现有 4 行（注释两行 + `/zoo-bench/` + 空行），`git -C <框架仓库> check-ignore -v zoo-bench` 输出 `.gitignore:48:/zoo-bench/`，`git status --short` 不再列出 `zoo-bench/`。**该改动尚未在框架仓库提交**——那个仓库里有维护者正在进行的类型注解工作，我不在未获明确要求时提交它
-- [ ] 6.2 在框架仓库 `README.md` 与 `docs/benchmark.md` 各增加一条指向报告发布地址的链接；验证：两处链接均可达，且未改动 `zoo_framework/` 下任何文件
-- [ ] 6.3 在框架仓库 `docs/benchmark.md` 中说明 `bench/`（只读历史证据）与 zoo-bench（长期 harness）的定位区别；验证：该文件中两处定位各有明确表述，不产生"bench 已迁移"的歧义
+- [x] 6.2 在框架仓库 `README.md` 与 `docs/benchmark.md` 各增加一条指向报告发布地址的链接；验证：两处链接均可达，且未改动 `zoo_framework/` 下任何文件。**已完成（改动在框架仓库工作区，未提交）**：`README.md` 的**中英两节各加一条**（该 README 是双语的，只加一节会让另一半读者看不到），`docs/benchmark.md` 顶部加了报告链接。三处都**先说清"上面那张表是 Windows 一次性证据、别跟 Linux 数字对比"**，再指向维护中的报告——否则读者会把 `bench/` 的旧 Windows 数字与 zoo-bench 的 Linux 数字当成同一回事。**未提交的理由**：框架仓库有 pre-commit 钩子，而这些钩子会瞬时丢弃未暂存改动，那里正有一个未暂存的 `uv.lock`；为三条链接去冒这个险不值得。`git status` 实测：`README.md` 的 diff **只有我加的两段引用块**，未夹带他人改动
+- [x] 6.3 在框架仓库 `docs/benchmark.md` 中说明 `bench/`（只读历史证据）与 zoo-bench（长期 harness）的定位区别；验证：该文件中两处定位各有明确表述，不产生"bench 已迁移"的歧义。**已完成**：顶部新增「两个仓库的分工（先读这段）」——一张对照表（是什么 / 回答什么 / 寿命 / 数据 / 线上），并明确一句"**要引用性能数字，用 zoo-bench 的报告**；`bench/` 的价值在于'为什么否掉了 Rust'这个决策本身"。**刻意不用"迁移"这个词**：两者不是新旧关系而是分工关系，`bench/` 的结论仍有效且永久只读，写成迁移会让读者以为旧结论作废。另核过：文档的锚点（`name="english"` / `name="中文"`）与语言切换段完好，插入位置在切换之后、正文之前
 
 ## 7. 收尾验证
 
