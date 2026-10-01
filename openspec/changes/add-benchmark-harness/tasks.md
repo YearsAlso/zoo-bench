@@ -55,7 +55,7 @@
 
 ## 6. 框架仓库侧对接
 
-- [ ] 6.1 在框架仓库 `.gitignore` 中增加 `/zoo-bench/`（本地并列克隆，见 design D1）；验证：`git status` 中不出现 `zoo-bench/`
+- [x] 6.1 在框架仓库 `.gitignore` 中增加 `/zoo-bench/`（本地并列克隆，见 design D1）；验证：`git status` 中不出现 `zoo-bench/`。**已完成并实测**：框架仓库 `.gitignore` 现有 4 行（注释两行 + `/zoo-bench/` + 空行），`git -C <框架仓库> check-ignore -v zoo-bench` 输出 `.gitignore:48:/zoo-bench/`，`git status --short` 不再列出 `zoo-bench/`。**该改动尚未在框架仓库提交**——那个仓库里有维护者正在进行的类型注解工作，我不在未获明确要求时提交它
 - [ ] 6.2 在框架仓库 `README.md` 与 `docs/benchmark.md` 各增加一条指向报告发布地址的链接；验证：两处链接均可达，且未改动 `zoo_framework/` 下任何文件
 - [ ] 6.3 在框架仓库 `docs/benchmark.md` 中说明 `bench/`（只读历史证据）与 zoo-bench（长期 harness）的定位区别；验证：该文件中两处定位各有明确表述，不产生"bench 已迁移"的歧义
 
