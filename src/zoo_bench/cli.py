@@ -360,6 +360,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_output_never_fatal() -> None:
+    """让"打印自己的输出"不会把进程杀掉。
+
+    实测踩过这个坑：在本机 Windows 控制台（GBK）上渲染**成功**、产物全对，但打印被跳过的字体
+    候选列表时撞上无法编码的 `µ`，`UnicodeEncodeError` 把一次成功变成了退出码 1。CI 上 stdout
+    是 UTF-8，故这个坑只在特定环境出现——而"因为打日志而失败"是最没价值的一类失败。
+
+    只把错误处理改成 ``replace``，不改编码：不改用户终端的观感，只是无法编码的字符变成 ``?``。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     """命令行主入口。
 
@@ -369,6 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         进程退出码。
     """
+    _make_output_never_fatal()
     arguments = build_parser().parse_args(argv)
     return int(arguments.handler(arguments))
 

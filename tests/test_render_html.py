@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -323,6 +324,57 @@ def test_default_matrix_includes_the_subject() -> None:
 
     specs = matrix_module.unit_specs(matrix, framework=matrix.frameworks[0])
     assert any(spec.adapter == "zoo" for spec in specs)
+
+
+def test_report_states_the_three_measurement_calibers() -> None:
+    """7.2：三条测量口径必须成文。
+
+    它们是这些数字可信度的**全部依据**，且每条各自对应一类曾被真实踩到的错误：跨运行做减法会
+    把开销高估一倍；预热不入统计，否则冷启动成本混进结果；绝对耗时跨运行不可比，故相对比才是
+    证据主体。
+    """
+    model = _model()
+    model["run"] = {"warmup_rounds": [3], "measured_rounds": [30], "absolute_note": ABSOLUTE_NOTE}
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "## 测量口径" in text
+    assert "在同一次运行内埋点" in text
+    assert "不做跨运行减法" in text
+    assert "预热不入统计" in text
+    assert "3 轮预热" in text and "30 轮正式采样" in text
+    assert "绝对耗时不可跨运行比较" in text
+
+
+def test_report_documents_how_to_add_your_own_comparison() -> None:
+    """7.2：报告必须写明"如何加入你自己的对照"。
+
+    它是这份报告**可被证伪**的前提——读者若能自己跑一遍对照，报告里的数字才不是只能听信的一面
+    之词。故它独立成节，而不是塞进脚注。
+    """
+    text = markdown_renderer.render_markdown(_model(), [])
+
+    assert "## 加入你自己的对照" in text
+    assert "BaseAdapter" in text
+    assert "无需改动本仓库任何文件" in text
+    assert "可被证伪" in text
+
+
+def test_cli_output_can_never_kill_the_process(tmp_path: Path) -> None:
+    """打印自己的输出不得把进程杀掉。
+
+    实测踩过：本机 Windows 控制台（GBK）上渲染**成功**、产物全对，但打印字体跳过原因时撞上
+    无法编码的 `µ`，`UnicodeEncodeError` 把一次成功变成退出码 1。CI 上 stdout 是 UTF-8，故
+    这个坑只在特定环境出现——而"因为打日志而失败"是最没价值的一类失败。
+    """
+    matrix_path = tmp_path / "matrix.yaml"
+    matrix_path.write_text(
+        "frameworks: ['zoo-framework==1.2.3']\nconcurrency: [1]\nbody_tiers_us: [100]\n",
+        encoding="utf-8",
+    )
+    cli.main(["frameworks", "--matrix", str(matrix_path)])
+
+    assert sys.stdout.errors == "replace"
+    assert sys.stderr.errors == "replace"
 
 
 def test_frameworks_command_prints_the_matrix_verbatim(

@@ -331,6 +331,57 @@ def caveat_text(caveat: dict[str, Any]) -> str:
     return f"**{caveat.get('kind', '')}**{adapter}：{caveat.get('text', '')}"
 
 
+EXTENSION_NOTE = (
+    "本 harness 的对照方案是**开放**的：实现 `zoo_bench.adapters.BaseAdapter` 的四个方法"
+    "（`setup` / `submit` / `drain` / `teardown`），用 `zoo_bench.adapters.registry.register` "
+    "登记，或在 `matrix.yaml` 的 `extra_modules` 里列出你的模块路径——**无需改动本仓库任何"
+    "文件**。你的实现会通过同一套等价性验证（提交 N 个执行体、断言全部执行且各执行一次），"
+    "不通过的不会被采信。"
+    "**我们主动把这条路径写进报告**：一份由被测框架维护者撰写、测量被测框架的报告，读者有理由"
+    "怀疑对照被写慢或口径被挑选；让任何人能提交自己的对照，是这份报告可被质疑、也可被证伪的前提。"
+)
+
+
+def _methodology_blocks(model: dict[str, Any]) -> list[Block]:
+    """测量口径：让读者知道这些数字是怎么来的。
+
+    独立成节而不是散在各处——**三条口径是数字可信度的全部依据**，读者要能一眼看全并据此判断
+    适用性。三条各自对应一类曾被真实踩到的错误：
+    ① 跨运行做减法会把开销高估一倍；② 预热不入统计，否则冷启动成本混进结果；
+    ③ 绝对耗时跨运行不可比，故相对比才是证据主体。
+    """
+    run = model.get("run", {})
+    warmups = run.get("warmup_rounds") or []
+    rounds = run.get("measured_rounds") or []
+    warmup_text = "、".join(str(value) for value in warmups) or "—"
+    rounds_text = "、".join(str(value) for value in rounds) or "—"
+
+    return [
+        _heading("测量口径"),
+        Block(
+            BULLETS,
+            items=(
+                "**执行体耗时在同一次运行内埋点**：由执行体在自身内部测量并回传，框架开销 ="
+                "端到端 − 它。**不做跨运行减法**——两次运行的状态不同（缓存、频率、调度噪声），"
+                "相减引入的是系统性偏差。",
+                f"**预热不入统计**：每个单元先跑 {warmup_text} 轮预热并丢弃，只统计随后的"
+                f" {rounds_text} 轮正式采样；采样数等于「正式轮数 × 并发度」。",
+                "**绝对耗时不可跨运行比较**：它只用于看量级；跨版本/跨机器要看的是**同一次运行内"
+                "的相对量**（开销占比、相对各对照方案的倍数），它们对整体快慢不敏感。",
+            ),
+        ),
+    ]
+
+
+def _extension_blocks() -> list[Block]:
+    """如何加入你自己的对照。
+
+    独立成节而不是塞进脚注：它是这份报告**可被证伪**的前提——读者若能自己跑一遍对照，报告里
+    的数字才不是只能听信的一面之词。
+    """
+    return [Block(HEADING, text="加入你自己的对照"), Block(PARAGRAPH, text=EXTENSION_NOTE)]
+
+
 def _caveat_blocks(model: dict[str, Any]) -> list[Block]:
     caveats = model.get("caveats", [])
     items = tuple(caveat_text(caveat) for caveat in caveats)
@@ -384,6 +435,7 @@ def build_blocks(
         _header_blocks,
         _environment_blocks,
         _load_blocks,
+        _methodology_blocks,
         _conclusion_blocks,
     ):
         blocks += builder(model)
@@ -391,5 +443,6 @@ def build_blocks(
     blocks += _dimension_blocks(model)
     blocks += _unfavorable_blocks(model)
     blocks += _caveat_blocks(model)
+    blocks += _extension_blocks()
     blocks += _self_check_blocks(model)
     return blocks
