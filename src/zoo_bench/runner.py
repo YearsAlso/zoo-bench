@@ -188,28 +188,41 @@ def check_overhead_across_tiers(units: list[dict[str, Any]]) -> dict[str, Any]:
 
     这是 design D5 那个 bug 的鉴别判据：若埋点口径有误、把执行体成本漏算进了开销，开销会
     随档位单调显著上升。**只看"最短档的数字好看"发现不了这个问题**。
+
+    **只在最低并发度上判否**。实测：并发度 64 时同一适配器的四档开销差异达 **35.5 倍**
+    （thread_pool）与 **21.5 倍**（asyncio_pool）——那不是成本被漏算，而是**排队**：并发超过
+    环境容量时端到端里含等待，除以并发度得到的"每任务开销"就跟着涨。该判据要抓的是系统性
+    错算，故只在排队最少的档位判定；高并发档位如实记录原始值并标明原因。
+
+    判定结论会进报告的模型：被标为受排队污染的 (适配器, 并发度) 组，其开销数字在报告里
+    也不该被当成框架开销来读。
     """
-    groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for unit in units:
         if unit["status"] != "ok":
             continue
         key = (unit["spec"]["adapter"], unit["spec"]["concurrency"])
-        groups.setdefault(key, []).append(unit)
+        grouped.setdefault(key, []).append(unit)
+
+    lowest = min((concurrency for _, concurrency in grouped), default=None)
 
     checks: list[dict[str, Any]] = []
-    for (adapter, concurrency), group in sorted(groups.items()):
+    for (adapter, concurrency), group in sorted(grouped.items()):
         ordered = sorted(group, key=lambda unit: unit["spec"]["body_tier_us"])
         if len(ordered) < 2:
             continue
 
         overheads = [float(unit["absolute"]["framework_overhead_seconds"]) for unit in ordered]
         baseline = overheads[0]
+        gated = concurrency == lowest
+
         if baseline <= 0:
             # 最短档开销非正时比值无意义；如实记录原始值，不据此判否（避免误报）
             checks.append(
                 {
                     "adapter": adapter,
                     "concurrency": concurrency,
+                    "gated": gated,
                     "body_tiers_us": [unit["spec"]["body_tier_us"] for unit in ordered],
                     "overheads_seconds": overheads,
                     "growth": None,
@@ -220,19 +233,45 @@ def check_overhead_across_tiers(units: list[dict[str, Any]]) -> dict[str, Any]:
             continue
 
         growth = max(overheads) / baseline
+        ok = growth <= OVERHEAD_TIER_RATIO_LIMIT
+        note = ""
+        if not gated and not ok:
+            note = (
+                "并发度高于最低档：端到端里含排队等待，除以并发度得到的每任务开销随之上升——"
+                "那是排队不是成本错算，故不参与判定（原值已如实记录）"
+            )
         checks.append(
             {
                 "adapter": adapter,
                 "concurrency": concurrency,
+                "gated": gated,
                 "body_tiers_us": [unit["spec"]["body_tier_us"] for unit in ordered],
                 "overheads_seconds": overheads,
                 "growth": growth,
-                "ok": growth <= OVERHEAD_TIER_RATIO_LIMIT,
-                "note": "",
+                "ok": ok,
+                "note": note,
             }
         )
 
-    return {"checks": checks, "ok": all(check["ok"] for check in checks)}
+    return {"checks": checks, "gated_concurrency": lowest, "ok": all(c["ok"] for c in checks if c["gated"])}
+
+
+def queueing_contaminated_groups(self_check: dict[str, Any]) -> list[dict[str, Any]]:
+    """开销数字受排队污染的 (适配器, 并发度) 组。
+
+    取"非判定档位且比值超上限"的那些——它们在报告里不该被当成框架开销来读。
+    """
+    return [
+        {
+            "adapter": check["adapter"],
+            "concurrency": check["concurrency"],
+            "growth": check["growth"],
+            "body_tiers_us": check["body_tiers_us"],
+            "overheads_seconds": check["overheads_seconds"],
+        }
+        for check in self_check.get("overhead_across_tiers", {}).get("checks", [])
+        if not check.get("gated", True) and not check.get("ok")
+    ]
 
 
 def check_process_isolation(units: list[dict[str, Any]]) -> dict[str, Any]:
@@ -505,6 +544,10 @@ def measure_matrix(
                 "iterations": payload["body_iterations"],
                 "checksum": payload["body_checksum"],
             }
+            # **逐轮原始样本必须进留档**。只存聚合后的分位数就不是"原始数据"而是派生物：
+            # 日后要换统计量、或要审计聚合有没有算错，旧留档全都用不上。实测踩过这个坑——
+            # 首份留档里 80 个单元、0 个样本，而报告看上去一切正常。
+            record["rounds"] = payload["rounds"]
             record["absolute"] = _absolute_from_rounds(payload["rounds"], spec)
             record["checks"] = {"body": body_deviation_check(record["absolute"], spec)}
             record["child_elapsed_seconds"] = result["child_elapsed_seconds"]

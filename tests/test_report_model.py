@@ -72,7 +72,8 @@ def _unit(
 
 
 def _subject_unit(
-    *, tier_us: float, e2e_per_task: float, body: float, drive_level: str = "调度派发层"
+    *, tier_us: float, e2e_per_task: float, body: float, concurrency: int = 4,
+    drive_level: str = "调度派发层",
 ) -> dict[str, Any]:
     """被测框架的单元：**必须声明 tier 为 ``under_test``**，否则模型识别不出被测对象。
 
@@ -85,6 +86,7 @@ def _subject_unit(
         tier_us=tier_us,
         e2e_per_task=e2e_per_task,
         body=body,
+        concurrency=concurrency,
         meta={"tier": "under_test", "drive_level": drive_level},
     )
 
@@ -106,6 +108,7 @@ def _result(
     comparisons: list[dict[str, Any]] | None = None,
     *,
     verification: dict[str, Any] | None = None,
+    self_check: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "run": {"platform": "test", "python": "3.13", "absolute_note": ABSOLUTE_NOTE},
@@ -113,7 +116,7 @@ def _result(
         "relative": {"note": "同一次运行内的相对比", "comparisons": comparisons or []},
         "verification": verification or {},
         "process_isolation": {"parent_pid": 1, "child_pids": [1000], "all_distinct": True},
-        "self_check": {"ok": True},
+        "self_check": self_check or {"ok": True},
     }
 
 
@@ -305,6 +308,65 @@ def test_conclusion_names_the_tier_where_overhead_drops_below_threshold() -> Non
     assert crossing["first_tier_at_or_below_threshold_us"] == 300
     assert crossing["threshold"] == OVERHEAD_THRESHOLD
     assert any("300" in line for line in model["conclusion"]["summary"])
+
+
+def test_queueing_contaminated_groups_are_marked_and_kept_out_of_the_headline() -> None:
+    """实测：并发度 64 时同一适配器的四档开销差异达 35.5 倍——那是**排队**不是成本错算。
+
+    受污染的组不给交叉点，其开销数字在报告里也不该被当作框架开销来读；原始值仍在场。
+    """
+    units = [
+        _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040, concurrency=1),
+        _subject_unit(tier_us=2700, e2e_per_task=0.002715, body=0.002700, concurrency=1),
+        _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040, concurrency=64),
+        _subject_unit(tier_us=2700, e2e_per_task=0.004400, body=0.002700, concurrency=64),
+    ]
+    contaminated = {
+        "ok": True,
+        "overhead_across_tiers": {
+            "gated_concurrency": 1,
+            "ok": True,
+            "checks": [
+                {
+                    "adapter": "zoo",
+                    "concurrency": 64,
+                    "gated": False,
+                    "ok": False,
+                    "growth": 35.5,
+                    "body_tiers_us": [40.0, 2700.0],
+                    "overheads_seconds": [1e-5, 3.5e-4],
+                }
+            ],
+        },
+    }
+    model = build_model(_result(units, self_check=contaminated))
+
+    by_concurrency = {c["concurrency"]: c for c in model["conclusion"]["overhead_crossings"]}
+    assert by_concurrency[1]["queueing_contaminated"] is False
+    assert by_concurrency[1]["first_tier_at_or_below_threshold_us"] == 2700
+
+    polluted = by_concurrency[64]
+    assert polluted["queueing_contaminated"] is True
+    assert polluted["first_tier_at_or_below_threshold_us"] is None, "受污染的组不该给交叉点"
+    assert "排队" in polluted["note"]
+
+    kinds = {caveat["kind"] for caveat in model["caveats"]}
+    assert "受排队污染的开销数字" in kinds, "受污染的组必须在报告里点名，而不是默默留在表里"
+    assert any(
+        caveat.get("groups") == ["zoo/64"] for caveat in model["caveats"]
+    ), "要指名具体是哪一组"
+
+
+def test_headline_still_uses_the_trustworthy_rows_only() -> None:
+    """头条只该用未被污染的行——否则一个排队数字会把结论左右。"""
+    units = [
+        _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040, concurrency=1),
+        _subject_unit(tier_us=2700, e2e_per_task=0.002715, body=0.002700, concurrency=1),
+    ]
+    model = build_model(_result(units))
+
+    headline = model["conclusion"]["summary"][0]
+    assert "2700" in headline
 
 
 def test_conclusion_headline_is_about_the_subject_not_the_best_baseline() -> None:

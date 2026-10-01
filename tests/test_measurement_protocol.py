@@ -162,6 +162,27 @@ def test_absolute_and_relative_are_separate_groups(small_run: dict[str, Any]) ->
         assert "仅在同一次运行内成立" in comparison["note"]
 
 
+def test_archive_keeps_the_raw_per_round_samples(small_run: dict[str, Any]) -> None:
+    """4.1：留档里必须有**逐轮原始样本**，不只是聚合后的分位数。
+
+    只存聚合值就不是"原始数据"而是派生物：日后要换统计量、或要审计聚合有没有算错，旧留档全都
+    用不上。实测踩过这个坑——首份留档里 80 个单元、0 个样本，而报告看上去一切正常。
+    """
+    for unit in small_run["units"]:
+        spec = unit["spec"]
+        assert len(unit["rounds"]) == spec["measured_rounds"], "轮数应与正式采样轮数一致"
+
+        for record in unit["rounds"]:
+            assert float(record["wall_seconds"]) > 0
+            assert len(record["body_seconds"]) == spec["concurrency"]
+
+        # 聚合值必须能从原始样本重算出来——否则聚合与样本可能各说各话
+        samples = [value for record in unit["rounds"] for value in record["body_seconds"]]
+        assert len(samples) == unit["absolute"]["body_seconds"]["n"]
+        assert min(samples) == pytest.approx(unit["absolute"]["body_seconds"]["min"])
+        assert max(samples) == pytest.approx(unit["absolute"]["body_seconds"]["max"])
+
+
 def test_each_unit_runs_in_its_own_process(small_run: dict[str, Any]) -> None:
     """2.7：每个测量单元跑在各自独立的子进程里。"""
     isolation = small_run["process_isolation"]
@@ -314,13 +335,51 @@ def test_setup_cost_is_outside_the_measured_window(
 # ------------------------------------------------------------------ 3.6 自检的鉴别力
 
 
-def _synthetic_unit(adapter: str, tier_us: float, overhead: float) -> dict[str, Any]:
+def _synthetic_unit(
+    adapter: str, tier_us: float, overhead: float, *, concurrency: int = 1
+) -> dict[str, Any]:
     return {
         "status": "ok",
-        "spec": {"adapter": adapter, "concurrency": 1, "body_tier_us": tier_us},
+        "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": tier_us},
         "absolute": {"framework_overhead_seconds": overhead},
         "checks": {},
     }
+
+
+def test_overhead_check_only_gates_the_lowest_concurrency() -> None:
+    """实测：并发度 64 时同一适配器的四档开销差异达 35.5 倍——那是**排队**不是成本错算。
+
+    并发超过环境容量时端到端含等待，除以并发度得到的每任务开销随之上升。该判据要抓的是系统性
+    错算，故只在排队最少的档位判否；高并发档位如实记录并标明原因。
+    """
+    quiet = [
+        _synthetic_unit("zoo", tier_us, 0.00001 * factor, concurrency=1)
+        for tier_us, factor in zip(TIERS_US, (1.0, 1.2, 1.5, 1.8), strict=True)
+    ]
+    polluted = [
+        _synthetic_unit("zoo", tier_us, 0.00001 * factor, concurrency=64)
+        for tier_us, factor in zip(TIERS_US, (1.0, 3.0, 12.0, 35.0), strict=True)
+    ]
+
+    result = check_overhead_across_tiers([*quiet, *polluted])
+
+    assert result["gated_concurrency"] == 1
+    assert result["ok"] is True, "高并发档的差异来自排队，不该让判据失败"
+
+    high = next(check for check in result["checks"] if check["concurrency"] == 64)
+    assert high["gated"] is False
+    assert high["growth"] > OVERHEAD_TIER_RATIO_LIMIT
+    assert "排队" in high["note"], "不参与判定必须给出原因，且原始值仍要在场"
+    assert high["overheads_seconds"]
+
+
+def test_overhead_check_still_gates_a_leak_at_the_lowest_concurrency() -> None:
+    """最低档上的泄漏仍必须判否——否则"只在最低档判定"会退化成"永不判定"。"""
+    units = [
+        _synthetic_unit("zoo", tier_us, 0.0001 * (index + 1) ** 2)
+        for index, tier_us in enumerate(TIERS_US)
+    ]
+    assert check_overhead_across_tiers(units)["ok"] is False
 
 
 def test_self_check_summary_names_every_failing_item() -> None:

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .runner import queueing_contaminated_groups
+
 #: 项目文档里的框架开销阈值。开销占比降到它以下，选用该框架的代价才算可忽略。
 #: 注意这是**离散档位上的近似**：真实交叉点落在相邻两档之间。
 OVERHEAD_THRESHOLD = 0.15
@@ -46,8 +48,15 @@ def subject_name(units: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def _overhead_crossings(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """各方案在多大的执行体时长下，框架开销占比降到阈值以下。"""
+def _overhead_crossings(
+    units: list[dict[str, Any]], contaminated: set[tuple[str, int]]
+) -> list[dict[str, Any]]:
+    """各方案在多大的执行体时长下，框架开销占比降到阈值以下。
+
+    **受排队污染的组不给交叉点**：并发度超出环境容量时端到端里含等待，除以并发度得到的
+    "每任务开销"随之上升，此时算出来的交叉点不是框架开销的交叉点。原始值仍如实保留，
+    只是不参与结论——否则头条会被一个排队数字左右。
+    """
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for unit in _successful(units):
         key = (unit["spec"]["adapter"], unit["spec"]["concurrency"])
@@ -58,15 +67,30 @@ def _overhead_crossings(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rows = sorted(group, key=lambda unit: unit["spec"]["body_tier_us"])
         ratios = [float(row["absolute"]["framework_overhead_ratio"]) for row in rows]
         tiers = [float(row["spec"]["body_tier_us"]) for row in rows]
+        polluted = (adapter, concurrency) in contaminated
 
-        first_below = next(
-            (
-                tier
-                for tier, ratio in zip(tiers, ratios, strict=True)
-                if ratio <= OVERHEAD_THRESHOLD
-            ),
-            None,
+        first_below = (
+            None
+            if polluted
+            else next(
+                (
+                    tier
+                    for tier, ratio in zip(tiers, ratios, strict=True)
+                    if ratio <= OVERHEAD_THRESHOLD
+                ),
+                None,
+            )
         )
+        if polluted:
+            note = (
+                "该组并发度超出环境容量，端到端含排队等待，其开销数字不可当作框架开销，"
+                "故不给交叉点（原值仍在场供人工判读）"
+            )
+        elif first_below is not None:
+            note = "该档位是所测档位中最小的满足者；真实交叉点落在它与前一档之间"
+        else:
+            note = "所测档位内没有一档的开销占比降到阈值以下"
+
         crossings.append(
             {
                 "adapter": adapter,
@@ -75,11 +99,8 @@ def _overhead_crossings(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "tiers_us": tiers,
                 "overhead_ratios": ratios,
                 "first_tier_at_or_below_threshold_us": first_below,
-                "note": (
-                    "该档位是所测档位中最小的满足者；真实交叉点落在它与前一档之间"
-                    if first_below is not None
-                    else "所测档位内没有一档的开销占比降到阈值以下"
-                ),
+                "queueing_contaminated": polluted,
+                "note": note,
             }
         )
     return crossings
@@ -271,6 +292,21 @@ def _caveats(
                     "text": "未通过“提交的任务全部执行且各执行一次”的验证，其数据不可信",
                 }
             )
+    contaminated = queueing_contaminated_groups(self_check)
+    if contaminated:
+        caveats.append(
+            {
+                "kind": "受排队污染的开销数字",
+                "count": len(contaminated),
+                "text": "以下 (适配器, 并发度) 组的并发度超出环境容量，端到端里含排队等待，"
+                "故其**框架开销与该组的交叉点不可当作框架开销来读**——原始值仍在报告里，"
+                "只是不参与结论。实测这类组的跨档位开销差异可达数十倍，全部来自排队",
+                "groups": [
+                    f"{group['adapter']}/{group['concurrency']}" for group in contaminated
+                ],
+            }
+        )
+
     ungated = [
         check
         for check in self_check.get("body_deviation", {}).get("checks", [])
@@ -397,7 +433,12 @@ def build_model(
     """
     units = result.get("units", [])
     subject = subject_name(units)
-    crossings = _overhead_crossings(units)
+    self_check = result.get("self_check", {})
+    contaminated = {
+        (group["adapter"], group["concurrency"])
+        for group in queueing_contaminated_groups(self_check)
+    }
+    crossings = _overhead_crossings(units, contaminated)
     turnings = _relative_turnings(result, subject)
 
     resolved_semantics = semantics if semantics is not None else result.get("semantics")
@@ -433,10 +474,10 @@ def build_model(
             else _unmeasured_semantics(),
         },
         "unfavorable": _unfavorable(result, subject),
-        "caveats": _caveats(units, result.get("verification", {}), result.get("self_check", {})),
+        "caveats": _caveats(units, result.get("verification", {}), self_check),
         "absolute": {
             "note": result.get("run", {}).get("absolute_note"),
             "process_isolation": result.get("process_isolation", {}),
         },
-        "self_check": result.get("self_check", {}),
+        "self_check": self_check,
     }
