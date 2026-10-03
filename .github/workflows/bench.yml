@@ -7,6 +7,13 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # **防循环用声明式的路径过滤，不用提交信息里的跳过关键词。**
+    # 实测踩过这个坑：归档提交原先在信息里写那个关键词，而那次提交的正文正好**在论证这个
+    # 标记**，于是关键词被读走、整次推送被静默跳过——随后 push 的六个提交一个都没触发工作流，
+    # 直到查 run 列表才发现。关键词的根本毛病是**文本匹配**：任何人把"跳过构建"这件事写进提交
+    # 信息就会误伤。路径过滤只排除"仅改动 results/ 的推送"，语义与要防的事情完全一致。
+    paths-ignore:
+      - "results/**"
 
 # 权限说明：`contents: write` 用于**把留档提交回本仓库**（见「归档原始数据」那一步）——
 # "报告可追溯到原始数据"对读者必须成立，而 CI 产物要登录才能下载。这**不是**跨仓库写回：
@@ -82,8 +89,9 @@ jobs:
         # 「报告可追溯到原始数据」对读者必须成立，而 CI 产物下载需要登录——故把留档提交进
         # 本仓库，使它公开可见、且有版本历史。
         #
-        # **必须防循环**：这次提交会推到 main，而本工作流正是 push 到 main 触发的。提交信息里的
-        # [skip actions] 让那次推送不再触发新一轮；没有它就会无限跑下去。
+        # **防循环在触发器上**（见文件顶部的 paths-ignore）：这次提交只改 results/，那次推送
+        # 因此不会触发本工作流。刻意**不**在提交信息里写任何跳过关键词——那是文本匹配，写下
+        # 论证它的文字本身就会误伤（实测踩过）。
         run: |
           git config user.name "zoo-bench"
           git config user.email "zoo-bench@users.noreply.github.com"
@@ -91,7 +99,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "留档无变化，跳过提交"
           else
-            git commit -m "chore(results): 归档 $(date -u +%Y-%m-%dT%H:%MZ) 的测量数据 [skip actions]"
+            git commit -m "chore(results): 归档 $(date -u +%Y-%m-%dT%H:%MZ) 的测量数据"
             git push
           fi
 

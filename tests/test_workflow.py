@@ -72,14 +72,43 @@ def test_workflow_never_pushes_to_another_repository() -> None:
     assert "git push\n" in text or text.rstrip().endswith("git push")
 
 
-def test_workflow_guards_against_a_self_triggering_loop() -> None:
-    """归档提交会推到 main，而本工作流正是 push 到 main 触发的——**必须有防循环标记**。
+#: 会让 GitHub 静默跳过工作流的提交信息关键词。
+SKIP_KEYWORDS = ("[skip ci]", "[ci skip]", "[no ci]", "[skip actions]", "[actions skip]")
 
-    没有它，每一轮工作流都会触发下一轮，无限跑下去。这条是本文件里最该存在的断言。
+
+def _triggers() -> dict:
+    """取 ``on:`` 段。
+
+    YAML 会把裸 ``on`` 解析成布尔 ``True``（不是字符串 ``"on"``），故两种键都试。
     """
-    text = _text()
-    assert "git commit" in text, "归档步骤应当提交"
-    assert "[skip actions]" in text, "提交信息里必须有防循环标记"
+    document = _document()
+    return document.get(True) or document.get("on") or {}
+
+
+def test_workflow_guards_against_a_self_triggering_loop() -> None:
+    """归档提交会推到 main，而本工作流正是 push 到 main 触发的——**必须有防循环**。
+
+    用**声明式的路径过滤**，不用提交信息里的跳过关键词。后者实测踩过：归档提交原先在信息里写
+    那个关键词，而提交正文正好**在论证这个标记**，于是关键词被读走、整次推送被静默跳过——
+    随后 push 的六个提交一个都没触发工作流，直到查 run 列表才发现。关键词的根本毛病是文本
+    匹配：任何人把"跳过构建"这件事写进提交信息就会误伤。
+    """
+    push = _triggers().get("push", {})
+    assert "results/**" in (push.get("paths-ignore") or []), "防循环要靠路径过滤"
+    assert "git commit" in _text(), "归档步骤应当提交"
+
+
+def test_workflow_commit_message_carries_no_skip_keyword() -> None:
+    """归档提交的信息里不得出现跳过关键词。
+
+    它与上一条是同一个坑的两面：关键词一旦出现在提交信息里（哪怕是论证它的文字），GitHub
+    就会静默跳过整次构建——而"构建没跑"看起来和"构建通过了"完全不一样，很容易被忽略。
+    """
+    for line in _text().splitlines():
+        if "git commit -m" not in line:
+            continue
+        for keyword in SKIP_KEYWORDS:
+            assert keyword not in line, f"提交信息里出现了 {keyword}：会把整次构建静默跳过"
 
 
 def test_workflow_installs_a_cjk_font() -> None:
