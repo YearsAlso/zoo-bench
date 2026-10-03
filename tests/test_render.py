@@ -81,14 +81,14 @@ def _model(*, overhead_ratio: float = 0.26) -> dict[str, Any]:
             "overhead_threshold": 0.15,
             "overhead_crossings": [],
             "relative_turnings": [],
-            "summary": ["执行体时长达到约 2700 µs 时开销占比降到 15% 以下。"],
+            "summary": ["执行体时长达到约 2700 微秒 时开销占比降到 15% 以下。"],
             "note": "单点加速比没有选型含义",
         },
         "dimensions": {
             "latency": {
                 "title": "延迟分位数与抖动",
                 "unit": "秒/任务",
-                "note": "端到端 ÷ 并发度",
+                "note": "端到端 / 并发度",
                 "rows": [
                     {
                         "adapter": "zoo",
@@ -112,7 +112,7 @@ def _model(*, overhead_ratio: float = 0.26) -> dict[str, Any]:
             "throughput": {
                 "title": "吞吐与并发伸缩",
                 "unit": "任务/秒",
-                "note": "并发度 ÷ 端到端中位数",
+                "note": "并发度 / 端到端中位数",
                 "rows": [
                     _throughput_row("zoo", 1, 2000.0),
                     _throughput_row("zoo", 4, 7000.0),

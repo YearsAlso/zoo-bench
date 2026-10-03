@@ -62,7 +62,7 @@ def overhead_ratio_chart(
 ) -> dict[str, Any]:
     """框架开销占比 vs 执行体档位 —— 选型的主图。
 
-    横轴取对数：档位跨 40 µs 到 10 ms（两个半数量级），线性轴会把短档全挤在左端。纵向虚线是
+    横轴取对数：档位跨 40 微秒 到 10 ms（两个半数量级），线性轴会把短档全挤在左端。纵向虚线是
     开销阈值——低于它，选用该方案的代价才算可忽略。
 
     Args:
@@ -108,7 +108,7 @@ def overhead_ratio_chart(
     axes.set_xscale("log")
     axes.set_title(title)
     axes.set_xlabel(xlabel)
-    # 刻意不用 µ 与 ÷：实测 SimHei 缺 MICRO SIGN 字形，图上会变成方框（见 render/fonts.py）
+    # 刻意不用 微秒 与 ÷：实测 SimHei 缺 MICRO SIGN 字形，图上会变成方框（见 render/fonts.py）
     axes.set_ylabel(ylabel)
     axes.grid(True, linestyle=":", alpha=0.5)
     axes.legend(fontsize=8)
@@ -178,7 +178,7 @@ def throughput_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any
         "figure": "throughput",
         "font": str(font),
         "paths": _render(figure, outdir=outdir, name="throughput"),
-        "scope": f"仅执行体 {tier:g} µs 档；吞吐仅在同一次运行内成立",
+        "scope": f"仅执行体 {tier:g} 微秒 档；吞吐仅在同一次运行内成立",
     }
 
 

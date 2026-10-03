@@ -6,7 +6,7 @@
 
 模型里承载的是报告**实质性主张**，不是排版：
 
-- ``conclusion``：交叉点。单点加速比没有选型含义——同一个框架开销，在 40 µs 的执行体上占
+- ``conclusion``：交叉点。单点加速比没有选型含义——同一个框架开销，在 40 微秒 的执行体上占
   端到端七成，在 10 ms 上只占百分之几。所以结论必须落在"多大的任务时长下用哪个方案"。
 - ``unfavorable``：被测框架处于劣势的档位。**缺失该项的报告不合格**（spec 的硬要求）：
   一份只展示自己赢的报告，读者有理由认为它不可信。
@@ -31,7 +31,7 @@ LOAD_COMPOSITION = (
 )
 
 LOAD_CAVEAT = (
-    "**负载是替身，不是真实 trace**：形状接近“取一帧数据 → 序列化 → 解析 → 字符串处理”"
+    "**负载是替身，不是真实 trace**：形状接近“取一帧数据 -> 序列化 -> 解析 -> 字符串处理”"
     "这类业务动作，但仓库内没有真实样本，结论的适用性以此为前提"
 )
 
@@ -166,7 +166,7 @@ def _summary(
     """结论摘要的句子。三个后端都直接用这几句，避免各写一遍导致措辞漂移。
 
     **开销交叉点只说被测框架那一行**。实测踩过这个坑：取所有方案里的最小值，于是头条写着
-    "约 40 µs 时开销降到 15% 以下"——那是某个对照方案的数字，而被测框架自己是 2700 µs。
+    "约 40 微秒 时开销降到 15% 以下"——那是某个对照方案的数字，而被测框架自己是 2700 微秒。
     头条说错了对象，整份报告的结论就被误读了。
     """
     lines: list[str] = []
@@ -180,7 +180,7 @@ def _summary(
     if subject_crossings:
         shortest = min(crossing["first_tier_at_or_below_threshold_us"] for crossing in subject_crossings)
         lines.append(
-            f"被测框架 {subject} 的执行体时长达到约 {shortest:g} µs 及以上时，其框架开销占端到端的"
+            f"被测框架 {subject} 的执行体时长达到约 {shortest:g} 微秒 及以上时，其框架开销占端到端的"
             f"比例降到 {OVERHEAD_THRESHOLD:.0%} 以下；短于此档位，选用它的主要代价就是框架开销本身。"
         )
     else:
@@ -194,7 +194,7 @@ def _summary(
         if turning["first_tier_baseline_not_faster_us"] is not None:
             lines.append(
                 f"并发度 {turning['concurrency']} 下，执行体时长超过约 "
-                f"{turning['first_tier_baseline_not_faster_us']:g} µs 后，{turning['baseline']} "
+                f"{turning['first_tier_baseline_not_faster_us']:g} 微秒 后，{turning['baseline']} "
                 f"不再快于被测框架。"
             )
         else:
@@ -348,7 +348,7 @@ def _latency_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
         "title": "延迟分位数与抖动",
         "unit": "秒/任务",
         "rows": rows,
-        "note": "端到端 ÷ 并发度；分位数与相对离散度同表给出，只给中位数的度量不合格",
+        "note": "端到端 / 并发度；分位数与相对离散度同表给出，只给中位数的度量不合格",
     }
 
 
@@ -368,7 +368,7 @@ def _overhead_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
         "title": "框架自身开销占比",
         "unit": "秒",
         "rows": rows,
-        "note": "开销 = 端到端/并发度 − 同一次运行内实测的执行体耗时（不做跨运行减法）",
+        "note": "开销 = 端到端/并发度 - 同一次运行内实测的执行体耗时（不做跨运行减法）",
     }
 
 
@@ -386,7 +386,7 @@ def _throughput_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
         "title": "吞吐与并发伸缩",
         "unit": "任务/秒",
         "rows": rows,
-        "note": "吞吐 = 并发度 ÷ 端到端中位数；随并发度是否继续上升即为伸缩性",
+        "note": "吞吐 = 并发度 / 端到端中位数；随并发度是否继续上升即为伸缩性",
     }
 
 
@@ -463,7 +463,7 @@ def build_model(
             "relative_turnings": turnings,
             "summary": _summary(crossings, turnings, subject),
             "note": "单点加速比没有选型含义；结论以“多大的执行体时长下选哪个方案”表述"
-            "（同一份框架开销，在 40 µs 的任务上占七成，在 10 ms 上只占百分之几）",
+            "（同一份框架开销，在 40 微秒 的任务上占七成，在 10 ms 上只占百分之几）",
         },
         "dimensions": {
             "latency": _latency_dimension(units),

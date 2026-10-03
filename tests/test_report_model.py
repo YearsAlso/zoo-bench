@@ -296,7 +296,7 @@ def test_model_reports_failed_units_as_a_caveat() -> None:
 
 
 def test_conclusion_names_the_tier_where_overhead_drops_below_threshold() -> None:
-    # 40 µs 档开销占比高（40/300），300 µs 档已低于 15%
+    # 40 微秒 档开销占比高（40/300），300 微秒 档已低于 15%
     units = [
         _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040),
         _subject_unit(tier_us=300, e2e_per_task=0.000340, body=0.000300),
@@ -372,8 +372,8 @@ def test_headline_still_uses_the_trustworthy_rows_only() -> None:
 def test_conclusion_headline_is_about_the_subject_not_the_best_baseline() -> None:
     """头条交叉点必须是被测框架那一行。
 
-    实测踩过这个坑：取所有方案里的最小值，于是头条写着"约 40 µs 时开销降到 15% 以下"——那是
-    某个对照方案的数字，而被测框架自己是 2700 µs。**头条说错了对象，整份报告的结论就被误读。**
+    实测踩过这个坑：取所有方案里的最小值，于是头条写着"约 40 微秒 时开销降到 15% 以下"——那是
+    某个对照方案的数字，而被测框架自己是 2700 微秒。**头条说错了对象，整份报告的结论就被误读。**
     """
     units = [
         _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040),

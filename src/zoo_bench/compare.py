@@ -6,8 +6,8 @@ design D6 定下"绝对耗时不可跨运行比较"，而**版本间变化本质
 一个陷阱：直接比两次运行的微秒数，会得到一份看着权威的垃圾（共享 runner 的漂移足以淹没版本
 差异）。可比的是**同运行内的相对量**：
 
-- **开销占比**：框架开销 ÷ 端到端，是比值，与环境快慢无关
-- **相对倍数**：对照方案的中位数 ÷ 被测框架的中位数，同一次运行内两两对照得出，对整体漂移
+- **开销占比**：框架开销 / 端到端，是比值，与环境快慢无关
+- **相对倍数**：对照方案的中位数 / 被测框架的中位数，同一次运行内两两对照得出，对整体漂移
   不敏感
 
 绝对耗时仍然列出，但**标为不可跨运行比较**——读者的诚实做法是拿它看量级，而不是看变化。
@@ -29,7 +29,7 @@ ABSOLUTE_NOTE = "绝对耗时不可跨运行比较：仅用于看量级，不要
 #: 参与对比的相对量。每一项都说明"上升意味着什么"——方向本身不带好坏含义，含义写在度量里。
 METRIC_SEMANTICS = {
     "overhead_ratio": "被测框架的框架开销占端到端比例；下降即开销摊薄得更好",
-    "speedup_vs_baseline": "对照方案中位数 ÷ 被测框架中位数；上升即被测框架相对更快",
+    "speedup_vs_baseline": "对照方案中位数 / 被测框架中位数；上升即被测框架相对更快",
 }
 
 _ENVIRONMENT_KEYS = ("hardware.cpu_model", "hardware.logical_cores", "hardware.platform", "python.version")
@@ -45,7 +45,7 @@ def _dig(source: dict[str, Any], path: str) -> Any:
 
 
 def _index(run: dict[str, Any]) -> dict[tuple[str, int, float], dict[str, Any]]:
-    """把测量单元索引成 (适配器, 并发度, 档位微秒) → 单元。"""
+    """把测量单元索引成 (适配器, 并发度, 档位微秒) -> 单元。"""
     return {
         (unit["spec"]["adapter"], int(unit["spec"]["concurrency"]), float(unit["spec"]["body_tier_us"])): unit
         for unit in run.get("units", [])
@@ -192,7 +192,7 @@ def _side(run: dict[str, Any], label: str) -> dict[str, Any]:
 
 
 def _ratios_by_key(run: dict[str, Any]) -> dict[tuple[str, int, float], float]:
-    """把该次运行的"相对比"索引成 (对照方案, 并发度, 档位) → 倍数。"""
+    """把该次运行的"相对比"索引成 (对照方案, 并发度, 档位) -> 倍数。"""
     ratios: dict[tuple[str, int, float], float] = {}
     for comparison in run.get("relative", {}).get("comparisons", []):
         for baseline, ratio in comparison.get("ratios_vs_subject", {}).items():

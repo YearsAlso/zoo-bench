@@ -1,4 +1,4 @@
-"""跨版本对比的渲染：对比结果 → 块列表 → Markdown / HTML。
+"""跨版本对比的渲染：对比结果 -> 块列表 -> Markdown / HTML。
 
 与报告走同一套块结构（design D11 的同源要求），故对比文档以后同样能出 PDF，不必再写一套。
 """
@@ -36,7 +36,7 @@ def build_blocks(comparison: dict[str, Any]) -> list[Block]:
     after = comparison["after"]
 
     blocks = [
-        Block(HEADING, text=f"zoo-bench 版本对比：{before['label']} → {after['label']}", level=1),
+        Block(HEADING, text=f"zoo-bench 版本对比：{before['label']} -> {after['label']}", level=1),
         Block(BULLETS, items=(_side_line(before), _side_line(after))),
     ]
 
@@ -141,8 +141,8 @@ def build_blocks(comparison: dict[str, Any]) -> list[Block]:
                     row["adapter"],
                     str(row["concurrency"]),
                     f"{row['body_tier_us']:g}",
-                    f"{row['before_median_seconds'] * 1e6:.2f} µs",
-                    f"{row['after_median_seconds'] * 1e6:.2f} µs",
+                    f"{row['before_median_seconds'] * 1e6:.2f} 微秒",
+                    f"{row['after_median_seconds'] * 1e6:.2f} 微秒",
                 )
                 for row in comparison["absolute_seconds"]
             ),
@@ -162,5 +162,5 @@ def render_html(comparison: dict[str, Any], *, title: str | None = None) -> str:
     """把对比结果渲染成 HTML。"""
     from .html import blocks_to_html
 
-    heading = title or f"zoo-bench 版本对比：{comparison['before']['label']} → {comparison['after']['label']}"
+    heading = title or f"zoo-bench 版本对比：{comparison['before']['label']} -> {comparison['after']['label']}"
     return blocks_to_html(build_blocks(comparison), title=heading)

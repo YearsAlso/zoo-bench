@@ -30,7 +30,17 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block, build_blocks
+from .blocks import (
+    BULLETS,
+    HEADING,
+    IMAGE,
+    NOTE,
+    PARAGRAPH,
+    TABLE,
+    Block,
+    assert_report_text_is_renderable,
+    build_blocks,
+)
 from .fonts import find_pdf_font
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
@@ -157,7 +167,7 @@ def build_story(blocks: list[Block], width: float, font_name: str) -> list[Any]:
             story.append(Paragraph(_markup(block.text), styles[NOTE]))
         elif block.kind == BULLETS:
             story.extend(
-                Paragraph(_markup(item), styles[BULLETS], bulletText="•") for item in block.items
+                Paragraph(_markup(item), styles[BULLETS], bulletText="-") for item in block.items
             )
             story.append(Spacer(1, 2 * mm))
         elif block.kind == TABLE:
@@ -193,11 +203,16 @@ def render_pdf(
         ``{"pdf": 路径, "font": 字体信息, "font_text_length": 覆盖检查用的字符数}``。
 
     Raises:
+        zoo_bench.render.blocks.UnsafeReportText: 报告正文里有中文字体不一定有的符号。
         zoo_bench.render.fonts.CjkFontUnavailable: 找不到既覆盖文本又能被嵌入的中文字体。
     """
     blocks = build_blocks(model, _absolute_charts(charts, figures_dir))
 
     text = blocks_text(blocks)
+    # 先查"字符本身是否该出现在中文报告里"，再查"所选字体认不认得它们"。
+    # 前者是**根因**（用了中文字体不保证有的排版符号），后者是环境差异；两道都拦，
+    # 因为缺字只会变成方框、文件照样生成。实测被 U+2212 卡住过一轮 CI。
+    assert_report_text_is_renderable(text)
     font = find_pdf_font(text)
 
     path = Path(out_path)

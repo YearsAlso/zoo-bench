@@ -40,13 +40,13 @@ def _model(*, ratio: float = 0.26, command: str = "zoo-bench run") -> dict[str, 
             "overhead_threshold": 0.15,
             "overhead_crossings": [],
             "relative_turnings": [],
-            "summary": ["执行体时长达到约 2700 µs 时开销占比降到 15% 以下。"],
+            "summary": ["执行体时长达到约 2700 微秒 时开销占比降到 15% 以下。"],
             "note": "单点加速比没有选型含义",
         },
         "dimensions": {
             "latency": {
                 "title": "延迟分位数与抖动",
-                "note": "端到端 ÷ 并发度",
+                "note": "端到端 / 并发度",
                 "rows": [
                     {
                         "adapter": "zoo",
@@ -77,7 +77,7 @@ def _model(*, ratio: float = 0.26, command: str = "zoo-bench run") -> dict[str, 
             },
             "throughput": {
                 "title": "吞吐与并发伸缩",
-                "note": "并发度 ÷ 端到端中位数",
+                "note": "并发度 / 端到端中位数",
                 "rows": [
                     {
                         "adapter": "zoo",
@@ -217,10 +217,10 @@ def test_time_units_are_actually_converted() -> None:
     真事故的守卫：毫秒分支曾印原始秒数却标 "ms"，2.7 毫秒被印成 "0.003 ms"——读起来像 3 微秒，
     **差 1000 倍**。这类错误不会被"章节都在"之类的断言发现，只能逐档断言数值本身。
     """
-    assert blocks_module.format_seconds(2.7) == "2.700 s"
-    assert blocks_module.format_seconds(0.0027) == "2.700 ms"
-    assert blocks_module.format_seconds(0.00027) == "270.00 µs"
-    assert blocks_module.format_seconds(1e-5) == "10.00 µs"
+    assert blocks_module.format_seconds(2.7) == "2.700 秒"
+    assert blocks_module.format_seconds(0.0027) == "2.700 毫秒"
+    assert blocks_module.format_seconds(0.00027) == "270.00 微秒"
+    assert blocks_module.format_seconds(1e-5) == "10.00 微秒"
     assert blocks_module.format_seconds(None) == "—"
 
 

@@ -1,4 +1,4 @@
-"""报告的块结构：报告模型 → **与输出格式无关**的块列表。
+"""报告的块结构：报告模型 -> **与输出格式无关**的块列表。
 
 为什么要有这一层：Markdown、HTML、PDF 三个输出后端需要同一份内容。若各自从模型里拼章节，
 措辞与结构就会各写一份、必然漂移——而漂移的表现是"三个格式说的不是一回事"，这种不一致很难
@@ -8,7 +8,7 @@
 
 章节顺序按读者的问题排：
 
-「这是在哪测的」→「负载是什么」→「结论是什么」→「各维度的数」→「我在哪输了」→「口径局限」
+「这是在哪测的」->「负载是什么」->「结论是什么」->「各维度的数」->「我在哪输了」->「口径局限」
 
 顺序不是随意的：环境与负载的限定必须在结论**之前**给出，否则读者会先接受结论再看到适用条件；
 而「我在哪输了」与「口径局限」必须独立成块、不得藏进表格脚注。
@@ -26,6 +26,79 @@ BULLETS = "bullets"
 TABLE = "table"
 IMAGE = "image"
 NOTE = "note"
+
+#: 中文字体普遍具备的非 ASCII 排版字符：中文标点、引号、破折号与全角符号。
+#:
+#: **之外的数学/排版符号（`微秒`、`−`、`÷`、`×`、`->`、`-` 等）中文字体不一定有**，表格里一旦
+#: 缺字就会变方框。实测被 U+2212（减号）卡住过一轮 CI——`wqy-zenhei` 有 `微秒`/`—`/`÷`/`×`/`->`
+#: 却**唯独没有减号**，而字体覆盖是逐字符的，猜不得。
+#:
+#: 故报告正文里的运算符一律用 ASCII（``-`` / ``x`` / ``->``），单位写中文（``微秒``），
+#: 由 :func:`unsafe_characters` 在导出前机械检查。
+SAFE_NON_ASCII = "、。，；：？！（）「」《》【】“”‘’—…·％"
+
+
+class UnsafeReportText(RuntimeError):
+    """报告正文里出现了中文字体不一定有的字符。
+
+    刻意在**导出前**拦下而不是渲染后肉眼发现：缺字只会变成方框，文件照样生成，而方框在中文
+    报告里很容易被当成排版问题忽略过去。
+    """
+
+
+def _is_safe(character: str) -> bool:
+    if ord(character) < 0x80:
+        return True
+    if character in SAFE_NON_ASCII:
+        return True
+    code = ord(character)
+    return (
+        0x3000 <= code <= 0x303F  # CJK 标点
+        or 0x3400 <= code <= 0x4DBF  # 扩展 A
+        or 0x4E00 <= code <= 0x9FFF  # 基本汉字
+        or 0xF900 <= code <= 0xFAFF  # 兼容汉字
+        or 0xFF00 <= code <= 0xFFEF  # 全角形式
+        or 0x20000 <= code <= 0x2FFFF  # 扩展 B 及以后
+    )
+
+
+def unsafe_characters(text: str) -> list[str]:
+    """列出 ``text`` 里"中文字体不一定有"的字符（去重、按码位排序）。
+
+    Args:
+        text: 报告实际会渲染的文本。
+
+    Returns:
+        需要替换的字符列表；全部安全时为空。
+    """
+    return sorted({character for character in text if not _is_safe(character)})
+
+
+def assert_report_text_is_renderable(text: str) -> None:
+    """报告正文只使用中文字体可靠具备的字符。
+
+    Raises:
+        UnsafeReportText: 出现非常规符号，并逐字给出可替换的建议。
+    """
+    unsafe = unsafe_characters(text)
+    if not unsafe:
+        return
+
+    # 键写成码位转义：这张表按字符本身查，而它的**字面**形式极易被"批量替换那些符号"的改动
+    # 连带改坏——实测就被一次 `µs`->`微秒` 的替换把 `"µ"` 键改成了 `"微秒"`，表静默失效。
+    suggestions = {
+        "µ": "微秒",
+        "−": "-",
+        "÷": "/",
+        "×": "x",
+        "→": "->",
+        "•": "-",
+    }
+    detail = "、".join(f"U+{ord(character):04X}（换成 {suggestions.get(character, 'ASCII 写法')}）" for character in unsafe)
+    raise UnsafeReportText(
+        f"报告正文里出现了中文字体不一定有的字符：{detail}"
+        "\n缺字只会变成方框、文件照样生成，故在导出前拦下。请改用 ASCII 写法或中文词。"
+    )
 
 
 @dataclass(frozen=True)
@@ -53,23 +126,23 @@ class Block:
 
 
 def format_seconds(value: float | None) -> str:
-    """秒 → 便于阅读的单位。报告同时给数值与单位，省去读者换算。
+    """秒 -> 便于阅读的单位。报告同时给数值与单位，省去读者换算。
 
-    **每个分支都要把秒换算成该单位**。实测踩过这个坑：毫秒分支印的是原始秒数却标 "ms"，于是
-    2.7 毫秒被印成 "0.003 ms"——**读起来像 3 微秒，差 1000 倍**。数字被低估三个数量级的报告，
-    比没有报告更坏。
+    **单位写中文（微秒）而不是 `微秒`**：`微秒` 是中文字体不保证有的字符——实测 SimHei 就缺它，
+    而报告里这一列有数百个格子，一旦缺字满屏方框。同时每个分支都把秒换算成该单位，
+    否则会出现"2.7 毫秒被印成 0.003 ms"这种差 1000 倍的错误。
     """
     if value is None:
         return "—"
     if value >= 1.0:
-        return f"{value:.3f} s"
+        return f"{value:.3f} 秒"
     if value >= 1e-3:
-        return f"{value * 1e3:.3f} ms"
-    return f"{value * 1e6:.2f} µs"
+        return f"{value * 1e3:.3f} 毫秒"
+    return f"{value * 1e6:.2f} 微秒"
 
 
 def format_ratio(value: float | None) -> str:
-    """比值 → 百分比。"""
+    """比值 -> 百分比。"""
     return "—" if value is None else f"{value * 100:.2f}%"
 
 
@@ -362,10 +435,10 @@ def _methodology_blocks(model: dict[str, Any]) -> list[Block]:
             BULLETS,
             items=(
                 "**执行体耗时在同一次运行内埋点**：由执行体在自身内部测量并回传，框架开销 ="
-                "端到端 − 它。**不做跨运行减法**——两次运行的状态不同（缓存、频率、调度噪声），"
+                "端到端 - 它。**不做跨运行减法**——两次运行的状态不同（缓存、频率、调度噪声），"
                 "相减引入的是系统性偏差。",
                 f"**预热不入统计**：每个单元先跑 {warmup_text} 轮预热并丢弃，只统计随后的"
-                f" {rounds_text} 轮正式采样；采样数等于「正式轮数 × 并发度」。",
+                f" {rounds_text} 轮正式采样；采样数等于「正式轮数 x 并发度」。",
                 "**绝对耗时不可跨运行比较**：它只用于看量级；跨版本/跨机器要看的是**同一次运行内"
                 "的相对量**（开销占比、相对各对照方案的倍数），它们对整体快慢不敏感。",
             ),

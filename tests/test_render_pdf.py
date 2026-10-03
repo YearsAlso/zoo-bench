@@ -46,7 +46,7 @@ def _model() -> dict[str, Any]:
         "dimensions": {
             "latency": {
                 "title": "延迟分位数与抖动",
-                "note": "端到端 ÷ 并发度",
+                "note": "端到端 / 并发度",
                 "rows": [
                     {"adapter": "zoo", "concurrency": 4, "body_tier_us": 300.0,
                      "end_to_end_per_task": dict(summary)}
@@ -63,7 +63,7 @@ def _model() -> dict[str, Any]:
             },
             "throughput": {
                 "title": "吞吐与并发伸缩",
-                "note": "并发度 ÷ 端到端中位数",
+                "note": "并发度 / 端到端中位数",
                 "rows": [
                     {"adapter": "zoo", "concurrency": 4, "body_tier_us": 300.0,
                      "throughput_per_second": 7000.0}
@@ -176,6 +176,47 @@ def test_pdf_records_the_font_it_embedded(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------------------ 字体解析
+
+
+# ------------------------------------------------------------------ 报告正文字符集
+
+
+def test_report_text_uses_only_renderable_characters() -> None:
+    """报告正文只使用中文字体可靠具备的字符。
+
+    实测被 U+2212（减号）卡住过一轮 CI：`wqy-zenhei` 有 `µ`/`—`/`/`/`×`/`→` 却**唯独没有
+    减号**——字体覆盖是逐字符的，猜不得。故运算符一律 ASCII、单位写中文，并由导出前检查兜住。
+    """
+    from zoo_bench.render.blocks import build_blocks, unsafe_characters
+    from zoo_bench.render.pdf import blocks_text
+
+    text = blocks_text(build_blocks(_model(), []))
+    unsafe = unsafe_characters(text)
+
+    assert not unsafe, f"报告正文里出现了中文字体不一定有的字符：{[f'U+{ord(c):04X}' for c in unsafe]}"
+
+
+def test_unsafe_characters_are_named_with_a_replacement() -> None:
+    """违例要指名道姓并给出改法，而不是只说"有非法字符"。"""
+    from zoo_bench.render.blocks import UnsafeReportText, assert_report_text_is_renderable
+
+    with pytest.raises(UnsafeReportText) as excinfo:
+        assert_report_text_is_renderable("开销 = 端到端 − 执行体")
+
+    message = str(excinfo.value)
+    assert "U+2212" in message
+    assert "-" in message, "要给出可替换的写法"
+
+
+def test_pdf_export_refuses_unsafe_report_text(tmp_path: Path) -> None:
+    """模型里混进非法符号时，PDF 导出必须失败并指名——而不是产出一份满屏方框的 PDF。"""
+    from zoo_bench.render.blocks import UnsafeReportText
+
+    model = _model()
+    model["caveats"] = [{"kind": "测试", "text": "开销 = 端到端 − 执行体"}]
+
+    with pytest.raises(UnsafeReportText, match="U\\+2212"):
+        report_renderer.render(model, tmp_path, threshold=0.15)
 
 
 def test_font_resolution_fails_clearly_when_no_candidate_exists(tmp_path: Path) -> None:
