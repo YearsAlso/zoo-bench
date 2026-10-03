@@ -8,10 +8,12 @@ on:
   push:
     branches: [main]
 
-# 只读仓库内容 + 发布 Pages。**不含对任何其他仓库的写权限**（design D9）：
-# 报告发布不需要回写框架仓库，因此既不需要 PAT，也不会产生 bot commit。
+# 权限说明：`contents: write` 用于**把留档提交回本仓库**（见「归档原始数据」那一步）——
+# "报告可追溯到原始数据"对读者必须成立，而 CI 产物要登录才能下载。这**不是**跨仓库写回：
+# design D9 禁的是向框架仓库回写（那需要 PAT、会产生跨仓 bot commit），本仓库自己归档自己
+# 的数据是正常做法。其余仍只读。
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -76,9 +78,26 @@ jobs:
       - name: 写站点首页
         run: zoo-bench index --site site
 
+      - name: 归档原始数据
+        # 「报告可追溯到原始数据」对读者必须成立，而 CI 产物下载需要登录——故把留档提交进
+        # 本仓库，使它公开可见、且有版本历史。
+        #
+        # **必须防循环**：这次提交会推到 main，而本工作流正是 push 到 main 触发的。提交信息里的
+        # [skip actions] 让那次推送不再触发新一轮；没有它就会无限跑下去。
+        run: |
+          git config user.name "zoo-bench"
+          git config user.email "zoo-bench@users.noreply.github.com"
+          git add results
+          if git diff --cached --quiet; then
+            echo "留档无变化，跳过提交"
+          else
+            git commit -m "chore(results): 归档 $(date -u +%Y-%m-%dT%H:%MZ) 的测量数据 [skip actions]"
+            git push
+          fi
+
       - name: 保存原始数据
-        # 留档是这套东西存在的理由——渲染出的报告可以重来，原始数据不能。
-        # 而且自检失败时，排查只能靠它。
+        # 除了进仓库，同时作为产物保留：留档是这套东西存在的理由——渲染出的报告可以重来，
+        # 原始数据不能。自检失败时，排查只能靠它。
         if: always()
         uses: actions/upload-artifact@v4
         with:

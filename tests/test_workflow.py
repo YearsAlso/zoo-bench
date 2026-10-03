@@ -53,17 +53,33 @@ def test_workflow_reads_versions_through_the_cli() -> None:
     assert "zoo-bench frameworks" in _text(), "版本清单必须经 zoo-bench frameworks 读取"
 
 
-def test_workflow_grants_no_write_access_beyond_pages() -> None:
-    """报告发布不回写框架仓库（design D9）：不需要 PAT，也不该有跨仓写权限。"""
+def test_workflow_grants_write_only_where_needed() -> None:
+    """写权限只给两处，各有理由。
+
+    `contents: write` 是**把留档提交回本仓库**用的——"报告可追溯到原始数据"对读者必须成立，
+    而 CI 产物要登录才能下载。这**不是**跨仓库写回：design D9 禁的是向框架仓库回写。
+    """
     permissions = _document().get("permissions", {})
-    assert permissions.get("contents") == "read", "仓库内容只应可读"
-    assert permissions.get("pages") == "write", "仅 Pages 需要写权限"
+    assert permissions.get("contents") == "write", "留档要提交回本仓库"
+    assert permissions.get("pages") == "write", "Pages 需要写权限"
 
 
 def test_workflow_never_pushes_to_another_repository() -> None:
+    """推送只针对本仓库。"""
     text = _text()
-    assert "git push" not in text
     assert "YearsAlso/zoo-framework" not in text, "不该出现框架仓库地址：没有任何回写路径"
+    # 裸 `git push`（不带远端 URL）= 推本仓库的 origin
+    assert "git push\n" in text or text.rstrip().endswith("git push")
+
+
+def test_workflow_guards_against_a_self_triggering_loop() -> None:
+    """归档提交会推到 main，而本工作流正是 push 到 main 触发的——**必须有防循环标记**。
+
+    没有它，每一轮工作流都会触发下一轮，无限跑下去。这条是本文件里最该存在的断言。
+    """
+    text = _text()
+    assert "git commit" in text, "归档步骤应当提交"
+    assert "[skip actions]" in text, "提交信息里必须有防循环标记"
 
 
 def test_workflow_installs_a_cjk_font() -> None:
