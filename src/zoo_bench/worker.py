@@ -28,7 +28,7 @@ from typing import Any
 from .adapters import registry
 from .semantics import probe_semantics
 from .workloads.body import body_for_tier
-from .workloads.identity import SlotBody, expected_durations, match_one_to_one
+from .workloads.identity import MarkerBody, expected_markers, matches_expected_set
 
 #: 等价性验证的批量：够看出"丢任务"与"重复执行"，又不至于把每个适配器都拖慢。
 VERIFY_BATCH = 4
@@ -44,12 +44,16 @@ def _load_adapter(spec: dict[str, Any]) -> type:
 
 
 def verify_equivalence(spec: dict[str, Any]) -> dict[str, Any]:
-    """断言"提交 N 个执行体、全部执行且各执行一次"（spec: adapter-contract）。"""
+    """断言"提交 N 个执行体、全部执行且各执行一次"（spec: adapter-contract）。
+
+    身份取自执行体的**返回值**（见 :mod:`zoo_bench.workloads.identity`），不取自耗时：
+    墙钟在共享机器上有一层绝对量级的停顿尾部，按耗时判定会让这道门禁约 15% 的跑随机变红。
+    """
     adapter_cls = _load_adapter(spec)
     concurrency = int(spec["concurrency"])
 
-    bodies = [SlotBody(index) for index in range(VERIFY_BATCH)]
-    expected = expected_durations(VERIFY_BATCH)
+    bodies = [MarkerBody(index) for index in range(VERIFY_BATCH)]
+    expected = expected_markers(VERIFY_BATCH)
 
     adapter = adapter_cls()
     adapter.setup(workers=concurrency)
@@ -62,11 +66,11 @@ def verify_equivalence(spec: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "adapter": adapter_cls.name,
-        "ok": match_one_to_one(observed, expected),
+        "ok": matches_expected_set(observed, expected),
         "expected_count": VERIFY_BATCH,
         "observed_count": len(observed),
-        "expected_durations": expected,
-        "observed_durations": observed,
+        "expected_markers": expected,
+        "observed_markers": observed,
     }
 
 

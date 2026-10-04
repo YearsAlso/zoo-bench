@@ -185,6 +185,24 @@ def install_source(distribution: str = "zoo-framework") -> dict[str, Any] | None
     return parsed if isinstance(parsed, dict) else None
 
 
+def drive_generation() -> dict[str, Any]:
+    """当前装着的被测框架提供哪一代的驱动面。
+
+    **判定由 :mod:`zoo_bench.generations` 负责**，本模块只负责把它记进自述：哪一代能驱动是
+    共用知识，而"这次测量用的是哪个世代的驱动面"是读者判断数字适用范围所需的事实——不记
+    下来，同一份报告里看不出被测对象是按哪套派发面驱动的。
+
+    **任何失败都如实记为不可用**：自述采集不该让整轮测量失败（判定失败会在测量单元里以更
+    完整的形式报出来），故这里把异常转成 ``error`` 字段。
+    """
+    try:
+        from .generations import probe_drive_generation
+
+        return probe_drive_generation()
+    except Exception as exc:
+        return {"generation": None, "label": None, "error": f"{type(exc).__name__}: {exc}"}
+
+
 def _subject_identity() -> dict[str, Any]:
     """被测框架的标识。
 
@@ -197,6 +215,7 @@ def _subject_identity() -> dict[str, Any]:
         "module_version": None,
         "module_path": None,
         "install_source": install_source(),
+        "drive_generation": drive_generation(),
         "note": "以 dist_version（发行元数据）为版本真源；module_version 仅作附注",
     }
 

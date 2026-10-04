@@ -1,7 +1,7 @@
 """仅测试用的执行体。
 
-带身份的 ``SlotBody`` 与判据辅助已移到 ``zoo_bench.workloads.identity``——**编排层也要用它们**
-（runner 的等价性验证），放两份必然漂移。这里只留测试独有的东西。
+带身份的 ``MarkerBody`` 与判据辅助在 ``zoo_bench.workloads.identity``——**编排层也要用它们**
+（worker 的等价性验证），放两份必然漂移。这里只留测试独有的东西。
 """
 
 from __future__ import annotations

@@ -50,8 +50,10 @@ def build_blocks(comparison: dict[str, Any]) -> list[Block]:
         )
 
     environment = comparison["environment"]
-    blocks.append(Block(HEADING, text="运行环境"))
+    generation = comparison["drive_generation"]
+    blocks.append(Block(HEADING, text="运行环境与读数口径"))
     blocks.append(Block(NOTE, text=environment["note"]))
+    blocks.append(Block(NOTE, text=generation["note"]))
     if environment["differences"]:
         blocks.append(
             Block(

@@ -3,8 +3,11 @@
 核心断言：任一适配器提交 N 个执行体后，**全部执行且各执行一次**。这条不成立时，数字再好看
 也是错的。
 
-本文件刻意包含一个**丢弃任务的坏适配器**。只验证"好适配器通过"不足以说明检查有效——一个
-恒真的检查看起来同样通过。没有那一条，"等价性验证"就只是装饰。
+本文件刻意包含两个**坏适配器**——一个丢弃任务、一个重复执行。只验证"好适配器通过"不足以
+说明检查有效：一个恒真的检查看起来同样通过。没有那两个反例，"等价性验证"就只是装饰。
+
+身份取自执行体的**返回值**而不是耗时（见 ``zoo_bench.workloads.identity``）：按耗时落点匹配
+在共享机器上会让这道门禁约 15% 的跑随机变红，一道会随机变红的门禁很快就会被学会忽略。
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -20,7 +24,7 @@ from _bodies import BoomBody
 
 from zoo_bench.adapters import registry
 from zoo_bench.adapters.base import BaseAdapter, OptionalDependencyMissing, Tier
-from zoo_bench.workloads.identity import SlotBody, expected_durations, match_one_to_one
+from zoo_bench.workloads.identity import MarkerBody, expected_markers, matches_expected_set
 
 CONCURRENCY = 4
 BATCH = 12
@@ -114,13 +118,13 @@ def test_submitted_tasks_run_exactly_once(name: str) -> None:
     adapter.setup(workers=CONCURRENCY)
     try:
         for index in range(BATCH):
-            adapter.submit(SlotBody(index))
-        durations = adapter.drain()
+            adapter.submit(MarkerBody(index))
+        markers = adapter.drain()
     finally:
         adapter.teardown()
 
-    assert match_one_to_one(durations, expected_durations(BATCH)), (
-        f"{name} 未能让每个执行体各执行一次（观测 {len(durations)} 条，期望 {BATCH} 条）"
+    assert matches_expected_set(markers, expected_markers(BATCH)), (
+        f"{name} 未能让每个执行体各执行一次（观测 {len(markers)} 条，期望 {BATCH} 条）"
     )
 
 
@@ -132,13 +136,40 @@ def test_instance_survives_more_than_one_round(name: str) -> None:
     try:
         for round_index in (0, 1):
             for index in range(BATCH):
-                adapter.submit(SlotBody(index))
-            durations = adapter.drain()
-            assert match_one_to_one(durations, expected_durations(BATCH)), (
+                adapter.submit(MarkerBody(index))
+            markers = adapter.drain()
+            assert matches_expected_set(markers, expected_markers(BATCH)), (
                 f"{name} 第 {round_index} 轮未能让每个执行体各执行一次"
             )
     finally:
         adapter.teardown()
+
+
+def test_equivalence_judgement_survives_a_scheduling_stall() -> None:
+    """判据 MUST NOT 因墙钟停顿翻转——这是它相对"按耗时落点匹配"的关键差别。
+
+    注入一次**绝对量级**的停顿（实测共享机器上并发睡眠的超发 p95 约 +25ms、最坏 +77ms，
+    且不随睡眠时长缩放）。旧判据（按耗时落点、容差 2ms）会因此判否：实测约 15% 的测量跑
+    自检随机变红，而红的正是"未通过等价性验证"这道可信度门禁。新判据只比较返回值。
+    """
+
+    class _StalledBody(MarkerBody):
+        """被调度推迟的执行体：睡远长于重叠时长，身份仍由返回值承载。"""
+
+        def __call__(self) -> float:
+            time.sleep(0.05)
+            return self.marker
+
+    adapter = registry.get("bare_thread")()
+    adapter.setup(workers=BATCH)
+    try:
+        for index in range(BATCH):
+            adapter.submit(_StalledBody(index))
+        markers = adapter.drain()
+    finally:
+        adapter.teardown()
+
+    assert matches_expected_set(markers, expected_markers(BATCH))
 
 
 @pytest.mark.parametrize("name", _INTERNAL)
@@ -157,8 +188,8 @@ def test_body_exception_propagates(name: str) -> None:
 class _DroppingAdapter(BaseAdapter):
     """故意丢弃任务的坏适配器：只执行第一个，其余静默丢弃。
 
-    它存在的唯一目的是证明上面的等价性检查**有鉴别力**。注意它的返回值"看起来很正常"
-    ——一条合理的耗时数字。若只看返回值，它与好适配器无法区分。
+    它存在的唯一目的是证明上面的等价性检查**有鉴别力**。注意它返回的那一条"看起来很正常"
+    ——一个合法值。若只看返回值本身，它与好适配器无法区分。
     """
 
     name = "dropping_for_discrimination_test"
@@ -178,18 +209,63 @@ class _DroppingAdapter(BaseAdapter):
         pass
 
 
+class _DuplicatingAdapter(BaseAdapter):
+    """故意重复执行任务的坏适配器：每个执行体跑一遍，其中两个再跑一遍。
+
+    与丢弃任务的坏适配器成对：spec 的两个场景各对应一个反例。它刻意构造成**集合比较会被骗过**
+    的形态——所有标记都出现过，故"去重后相等"成立；只有多重集比较能看出有的标记出现了两次。
+    这正是判据不能用集合比较的理由。
+    """
+
+    name = "duplicating_for_discrimination_test"
+    tier = Tier.BARE
+
+    def setup(self, *, workers: int) -> None:
+        self._bodies: list[Callable[[], float]] = []
+
+    def submit(self, body: Callable[[], float]) -> None:
+        self._bodies.append(body)
+
+    def drain(self) -> list[float]:
+        bodies, self._bodies = self._bodies, []
+        return [body() for body in bodies] + [bodies[0](), bodies[1]()]
+
+    def teardown(self) -> None:
+        pass
+
+
 def test_equivalence_check_can_see_a_dropped_task() -> None:
     adapter = _DroppingAdapter()
     adapter.setup(workers=CONCURRENCY)
     for index in range(BATCH):
-        adapter.submit(SlotBody(index))
-    durations = adapter.drain()
+        adapter.submit(MarkerBody(index))
+    markers = adapter.drain()
     adapter.teardown()
 
-    # 它的返回值看起来很正常——一条合理的耗时数字……
-    assert len(durations) == 1
-    # ……但"一一对应"的判据立刻暴露它丢弃了任务
-    assert not match_one_to_one(durations, expected_durations(BATCH))
+    # 它返回的那一条很正常……
+    assert len(markers) == 1
+    # ……但"集合相等"的判据立刻暴露它丢弃了任务
+    assert not matches_expected_set(markers, expected_markers(BATCH))
+
+
+def test_equivalence_check_can_see_a_duplicated_task() -> None:
+    """重复执行必须被判否，且这一条**要求判据比的是多重集而非集合**。
+
+    断言里多出来的那条 ``set(...) == set(...)`` 不是凑数：它证明"集合比较会放过这个反例"。
+    没有它，这条用例在判据退化成集合比较时照样绿——那就成了一条守着空气的守卫。
+    """
+    adapter = _DuplicatingAdapter()
+    adapter.setup(workers=CONCURRENCY)
+    for index in range(BATCH):
+        adapter.submit(MarkerBody(index))
+    markers = adapter.drain()
+    adapter.teardown()
+
+    assert len(markers) == BATCH + 2
+    assert len(set(markers)) < len(markers), "构造的反例里必须真的存在重复"
+    # 去重后的集合**相等**——所以集合比较看不出问题，判否只能来自多重集比较
+    assert set(markers) == set(expected_markers(BATCH))
+    assert not matches_expected_set(markers, expected_markers(BATCH))
 
 
 # --------------------------------------------------------------------------- 可选依赖与标注
@@ -238,12 +314,12 @@ def test_external_adapter_needs_no_change_inside_the_package(
     adapter.setup(workers=CONCURRENCY)
     try:
         for index in range(BATCH):
-            adapter.submit(SlotBody(index))
+            adapter.submit(MarkerBody(index))
         durations = adapter.drain()
     finally:
         adapter.teardown()
 
-    assert match_one_to_one(durations, expected_durations(BATCH))
+    assert matches_expected_set(durations, expected_markers(BATCH))
 
 
 def test_missing_optional_dependency_raises_an_actionable_error() -> None:

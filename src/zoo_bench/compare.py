@@ -12,12 +12,14 @@ design D6 定下"绝对耗时不可跨运行比较"，而**版本间变化本质
 
 绝对耗时仍然列出，但**标为不可跨运行比较**——读者的诚实做法是拿它看量级，而不是看变化。
 
-## 两处必须显式报告而不是静默处理
+## 三处必须显式报告而不是静默处理
 
 - **只在一侧出现的单元**：档位或适配器变过，两侧就不是同一批单元，差异无法归因。列出来，
   而不是取交集悄悄丢掉。
 - **两次运行的环境是否一致**：不是同一台机器/同一平台时，对比的效力依赖读者的判断，故把两边
   的环境都摆出来并标出差异字段。
+- **两侧的驱动面机制是否相同**：完成信号的取得方式随版本变过，而它**计入被测框架的端到端**。
+  机制不同时，两侧差异里有一部分是机制自身的成本——那属于版本变化，但不能整体读成性能改进。
 """
 
 from __future__ import annotations
@@ -85,6 +87,43 @@ def _environment_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str
             else "**两次运行的环境不同**：版本差异与机器差异混在一起，不能只归因于版本。"
             "下面的相对量对整体快慢不敏感，但仍应结合本项判断"
         ),
+    }
+
+
+def _drive_generation_diff(before_run: dict[str, Any], after_run: dict[str, Any]) -> dict[str, Any]:
+    """两侧各自按哪一代驱动面测量，以及机制不同时对读数的含义。
+
+    **驱动机制会随版本变**（实测：完成信号一代取自框架内部回调、一代取自框架自身的结果响应器），
+    而两者的开销**都计入被测框架的端到端**。所以两侧开销占比的差异里有一部分是**驱动机制自身
+    的成本**——它确实是这次版本变化的一部分，但不能整体读成一般意义的性能改进。不写出来，
+    读者会把它全部读成改进。
+    """
+
+    def side(run: dict[str, Any]) -> dict[str, Any]:
+        subject = _dig(run.get("environment") or {}, "subject.drive_generation")
+        subject = subject if isinstance(subject, dict) else {}
+        return {"generation": subject.get("generation"), "label": subject.get("label")}
+
+    before, after = side(before_run), side(after_run)
+    if before["generation"] is None or after["generation"] is None:
+        note = (
+            "至少一侧的留档里没有驱动面世代（该字段由 zoo-bench 的环境自述记下），"
+            "无法判断两侧的读数口径是否一致——**先补齐环境自述再看差异**"
+        )
+    elif before["generation"] == after["generation"]:
+        note = f"两侧同为「{before['generation']}」代驱动面，读数口径一致"
+    else:
+        note = (
+            f"**两侧的驱动面机制不同**（{before['generation']} 与 {after['generation']}）："
+            "完成信号一代取自框架内部回调、一代取自框架自身的结果响应器，而两者的开销都计入"
+            "被测框架的端到端。故两侧的差异里**有一部分是驱动机制自身的成本**——它是这次版本"
+            "变化的一部分，但不能整体读成一般意义的性能改进"
+        )
+    return {
+        "before": before,
+        "after": after,
+        "same": before["generation"] == after["generation"],
+        "note": note,
     }
 
 
@@ -171,6 +210,7 @@ def compare_versions(
         "environment": _environment_diff(
             before_run.get("environment") or {}, after_run.get("environment") or {}
         ),
+        "drive_generation": _drive_generation_diff(before_run, after_run),
         "metric_semantics": METRIC_SEMANTICS,
         "shared_unit_count": len(shared),
         "only_in_one": only_in_one,

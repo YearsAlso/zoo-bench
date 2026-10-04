@@ -13,27 +13,23 @@
 # 版本号必须真实存在（PyPI）或引用必须真实存在（git），否则安装失败。核对可用版本：
 #   uv pip index versions zoo-framework
 # 不要照抄框架仓库 pyproject.toml 里的版本号——实测它与 PyPI 上的发行版对不上。
+#
+# ------------------------------------------------------------------ 加版本的正确顺序
+#
+# **先装上目标版本、重跑全套用例，通过之后才改这份清单。**
+#
+# 这条不是泛泛提醒，是这个仓库实际吃过的亏（2026-10-04）：当时先把 0.7.1b0 写进清单、后装它
+# 跑用例，13 条立刻失败——`AttributeError: property 'workers' of 'BaseWaiter' object has no
+# setter`。框架把派发面的 `workers` 从可写属性改成了只读属性，适配器是按上一代的写法驱动它的。
+# 好在推送前发现，没有留下红的 CI。**判据本身（"追加版本必须重跑等价性用例"）是有效的，
+# 错的是执行顺序**——先改清单，等于把"这一版能不能测"这个问题跳过去了。
+#
+# 装上跑一遍之所以是判据：它同时覆盖适配器契约、测量协议、语义探查三处对被测版本的假设。
 frameworks:
   - "zoo-framework==0.6.0"
-  # 0.7.x 需要先适配适配器才能测——见下方说明
-  # - "zoo-framework==0.7.1b0"
-  # - "zoo-framework @ git+https://github.com/YearsAlso/zoo-framework.git@dev"
-
-# **为什么 0.7.x 目前不在清单里**（2026-10-04 实测）
-#
-# 装上 0.7.1b0 后跑用例，13 条立刻失败，根因是**派发面变了**：
-#   AttributeError: property 'workers' of 'BaseWaiter' object has no setter
-# 0.6.0 里 `BaseWaiter.workers` / `worker_props` 是可写属性（适配器靠赋值驱动），0.7.1 改成
-# **只读属性**，替代入口是 `call_workers(worker_list)`；而我的完成信号观测点
-# `worker_running_callback` 已不在 0.7.1 的公开面上。0.7.x 的 waiter 还引入了
-# `dispatch_core` / `scheduler_model` 的组合结构，池与模式的配置方式也随之变了。
-#
-# 这正是 design 那条风险（"适配器的驱动假设会随被测版本改变"）的实例，而"追加版本必须重跑
-# 等价性用例"这条判据如实把它拦下了。**加版本的正确顺序是先装上它跑一遍用例，再改矩阵**——
-# 这次把顺序做反了（先改矩阵、后装它跑），好在推送前发现。
-#
-# 要做的是让 zoo 适配器**按版本分流**（0.6.x 走赋值、0.7.x 走 call_workers 并换完成信号），
-# 而不是二选一——清单里同时存在两个大版本正是这套 harness 的目的之一。
+  # 适配器、语义探查均已按世代分流；这一条经全套用例通过后加入（见上方顺序纪律）
+  - "zoo-framework==0.7.1b0"
+  - "zoo-framework @ git+https://github.com/YearsAlso/zoo-framework.git@dev"
 
 # 并发度档位
 concurrency: [1, 4, 16, 64]

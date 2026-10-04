@@ -1,8 +1,9 @@
 """跨版本对比的验证（spec: comparison-report 的"版本间的性能变化 MUST 可查询"）。
 
-本文件的重点不是"能不能出结果"，而是两处**必须显式报告而不是静默处理**的地方：只在一侧出现的
-单元、两次运行环境是否一致。以及一条口径约束：对比的主证据必须是**同运行内的相对量**，不是
-绝对耗时——后者跨运行不可比（design D6）。
+本文件的重点不是"能不能出结果"，而是三处**必须显式报告而不是静默处理**的地方：只在一侧出现的
+单元、两次运行环境是否一致、两侧的驱动面机制是否相同（机制差异会混进差异里被读成性能改进）。
+以及一条口径约束：对比的主证据必须是**同运行内的相对量**，不是绝对耗时——后者跨运行不可比
+（design D6）。
 """
 
 from __future__ import annotations
@@ -41,14 +42,18 @@ def _run(
     cpu: str = "CPU A",
     self_check: bool = True,
     version: str = "1.0",
+    drive_generation: str | None = "previous",
 ) -> dict[str, Any]:
+    subject: dict[str, Any] = {"dist_version": version}
+    if drive_generation is not None:
+        subject["drive_generation"] = {"generation": drive_generation, "label": "（合成）"}
     return {
         "units": units,
         "relative": {"comparisons": comparisons or [], "note": ""},
         "environment": {
             "hardware": {"cpu_model": cpu, "logical_cores": 4, "platform": "Linux-x86_64"},
             "python": {"version": "3.13.0"},
-            "subject": {"dist_version": version},
+            "subject": subject,
         },
         "self_check": {"ok": self_check},
     }
@@ -154,6 +159,48 @@ def test_same_environment_is_reported_as_same() -> None:
     assert result["environment"]["differences"] == {}
 
 
+def test_differing_drive_surfaces_are_flagged_with_their_effect_on_the_numbers() -> None:
+    """两侧驱动面机制不同时必须说出来，并讲清它对读数的影响。
+
+    完成信号的取得方式随版本变过，而它**计入被测框架的端到端**：两侧差异里有一部分是机制自身
+    的成本。不写出来，读者会把那部分整个读成性能改进——一个由插桩方式造成的"改进"。
+    """
+    before, after = _pair()
+    after["environment"]["subject"]["drive_generation"] = {
+        "generation": "current",
+        "label": "（合成）",
+    }
+
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    assert result["drive_generation"]["same"] is False
+    assert result["drive_generation"]["before"]["generation"] == "previous"
+    assert result["drive_generation"]["after"]["generation"] == "current"
+    assert "驱动机制自身的成本" in result["drive_generation"]["note"]
+    assert "不能整体读成一般意义的性能改进" in result["drive_generation"]["note"]
+
+
+def test_same_drive_surface_is_reported_as_comparable() -> None:
+    before, after = _pair()
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    assert result["drive_generation"]["same"] is True
+    assert "口径一致" in result["drive_generation"]["note"]
+
+
+def test_missing_drive_surface_is_reported_as_unknown_not_assumed_same() -> None:
+    """一侧没有该字段时**不假定一致**：那是"不知道"，不是"相同"。"""
+    before, after = _pair()
+    after["environment"]["subject"].pop("drive_generation", None)
+
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    assert result["drive_generation"]["same"] is False
+    assert "无法判断两侧的读数口径是否一致" in result["drive_generation"]["note"]
+    # 缺失要说出来，而且不能把它当成"两侧机制不同"那种有实质结论的情形
+    assert "驱动机制自身的成本" not in result["drive_generation"]["note"]
+
+
 def test_a_side_that_failed_self_check_makes_the_comparison_void() -> None:
     """自检未通过的一侧其数字不可信——对比要在文档里说清它不作数。"""
     before, after = _pair()
@@ -173,18 +220,25 @@ def test_a_side_that_failed_self_check_makes_the_comparison_void() -> None:
 def test_comparison_renders_every_section() -> None:
     before, after = _pair()
     after["units"].append(_unit("zoo", 4, 2700.0, 0.05, 0.003))
+    after["environment"]["subject"]["drive_generation"] = {
+        "generation": "current",
+        "label": "（合成）",
+    }
     text = compare_renderer.render_markdown(
         compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
     )
 
     for section in (
-        "## 运行环境",
+        "## 运行环境与读数口径",
         "## 只在一侧出现的单元",
         "## 框架开销占比的变化",
         "## 相对各对照方案的倍数的变化",
         "## 绝对耗时（不可跨运行比较）",
     ):
         assert section in text, f"对比缺少章节：{section}"
+
+    # 读数口径那一节必须真的把驱动面机制的差异讲出来，光有标题不算
+    assert "驱动机制自身的成本" in text
 
 
 def test_comparison_markdown_and_html_read_the_same_result() -> None:

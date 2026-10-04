@@ -150,6 +150,19 @@ def _heading(text: str, level: int = 2) -> Block:
     return Block(HEADING, text=text, level=level)
 
 
+def _drive_generation_text(subject: dict[str, Any]) -> str:
+    """被测框架的驱动面世代，**记不清就如实说记不清**。
+
+    世代判定失败时给的是探测结果（见 :func:`zoo_bench.adapters.zoo.probe_drive_generation`），
+    不是一句"未知"——"未知"和"探测到的是这样"在排查时是完全不同的两条信息。
+    """
+    generation = subject.get("drive_generation") or {}
+    label = generation.get("label")
+    if label:
+        return str(label)
+    return f"无法判定（{generation.get('error') or '自述里没有这一项'}）"
+
+
 def _environment_blocks(model: dict[str, Any]) -> list[Block]:
     environment = model.get("environment")
     if environment is None:
@@ -178,6 +191,7 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
         ("解释器", str(python.get("executable"))),
         ("被测框架（发行元数据）", str(subject.get("dist_version"))),
         ("被测框架（模块 __version__）", f"{subject.get('module_version')}（仅附注，不作版本判据）"),
+        ("被测框架的驱动面世代", _drive_generation_text(subject)),
     ]
 
     # git 安装时把来源与 commit 摆出来：分支安装的版本号只是仓库里写着的声明值，
@@ -353,10 +367,16 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
     ]
 
     semantics = dimensions.get("semantics", {})
+    # 结论是在哪一代驱动面上得出的必须随报告给出：这一维的结论与坐标按版本成立，
+    # 读者看不到"在哪一代得出"，就无法判断它对自己关心的那一版是否还作数
+    derived_on = semantics.get("derived_on")
+    status = f"**状态：{semantics.get('status')}**"
+    if derived_on:
+        status += f"（结论在该次测量装着的「{derived_on}」代驱动面上得出）"
     blocks += [
         _heading(f"维度：{semantics.get('title', '调度语义的代价')}"),
         Block(NOTE, text=f"口径：{semantics.get('scope_note', '')}"),
-        Block(PARAGRAPH, text=f"**状态：{semantics.get('status')}**"),
+        Block(PARAGRAPH, text=status),
     ]
     if semantics.get("reason"):
         blocks.append(Block(PARAGRAPH, text=str(semantics["reason"])))

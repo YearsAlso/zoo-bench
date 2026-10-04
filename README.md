@@ -28,10 +28,24 @@ public report in **HTML / Markdown / PDF**.
 | **Where does the framework lose?** — published explicitly, not buried. | How it compares to Rust. That was settled as *no-go* in the framework repo's [`bench/`](https://github.com/YearsAlso/zoo-framework/tree/dev/bench). |
 | What does the framework's own overhead cost per task, and at what task duration does it stop dominating? | What the framework's *scheduling semantics* cost — see below. |
 
-**The scheduling-semantics dimension is not measurable on `zoo-framework==0.6.0`**, and the report
-says so with per-item evidence: timeout enforcement exists but its action is commented out, and the
-event layer cannot execute a reactor at all. That is a **conclusion reached by probing**, not an
-omission — the report distinguishes "measured and found unmeasurable" from "never measured".
+**The scheduling-semantics dimension is measured per framework generation, and its conclusion is
+scoped to the generation it was derived on.** On the older generation (`zoo-framework==0.6.0`) it
+reads *not measurable*, with per-item evidence: timeout enforcement exists but its action is
+commented out, and the event layer cannot execute a reactor at all. On the current generation
+(`0.7.1b0`) the dispatch-layer timeout **is** enforced — the worker is reaped near the configured
+`runTimeout` instead of at the body's natural end — so the dimension yields a usable item. Where a
+per-item claim and its `file:line` coordinates come from the other generation, the report says
+*not re-checked on this one* rather than copying them over. That is a **conclusion reached by
+probing**, not an omission — the report distinguishes "measured and found unmeasurable" from
+"never measured".
+
+**Which generations are supported is decided by capability probing, not by version strings.** The
+installed framework's drive surface is inspected (is `workers` assignable? does `core.set_workers`
+exist? is `shutdown` callable?) and the harness picks the matching driving path. Version strings
+are deliberately not consulted: the published `0.7.1b0` writes `0.7.1-beta` into its own metadata,
+and the numbers of future generations cannot be known in advance. If the drive surface matches no
+known generation, the harness **fails loudly** and lists what it probed — it never quietly falls
+back to one generation's path and measures something the framework does not actually do.
 
 ### How to read the report
 
@@ -51,7 +65,7 @@ uv sync                                          # or: pip install -e ".[dev]"
 zoo-bench run                                    # measure every unit in matrix.yaml, archive raw data
 zoo-bench render --framework 0.6.0 --out site/0.6.0
 zoo-bench index --site site
-zoo-bench compare 0.5.4b0 0.6.0 --out site/compare
+zoo-bench compare 0.6.0 0.7.1b0 --out site/compare
 ```
 
 - **`matrix.yaml` is the single source of truth** for which framework versions, adapters,
@@ -124,9 +138,18 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
 | **本框架在哪里输** —— 明确列出，不藏在脚注里 | 相对 Rust 如何。那个问题已在框架仓库的 [`bench/`](https://github.com/YearsAlso/zoo-framework/tree/dev/bench) 里判定为 *no-go* |
 | 框架自身开销每任务多少钱，以及任务长到多少时它不再占主导 | 框架的**调度语义**值多少钱 —— 见下 |
 
-**调度语义这一维在 `zoo-framework==0.6.0` 上不可测**，报告如实写明并逐项给出证据：超时的
-执行动作是注释掉的、事件层根本执行不了反应器。这是**探查得出的结论而非遗漏**——报告区分
-"测了发现不可测"与"从未测过"两种状态。
+**调度语义这一维按框架世代分别测量，结论只对它得出的那一代成立。** 在上一代
+（`zoo-framework==0.6.0`）上它读作*不可测*，并逐项给出证据：超时的执行动作是注释掉的、
+事件层根本执行不了反应器。在当前代（`0.7.1b0`）上，派发层的超时**是生效的**——worker 会在
+配置的 `runTimeout` 附近被摘除，而不是等到执行体自然结束——故该维产出一个可用项。若某一项的
+结论与它的 `file:line` 坐标来自另一代，报告会写明*在当前代未复核*，而不是照抄过来。这是
+**探查得出的结论而非遗漏**——报告区分"测了发现不可测"与"从未测过"两种状态。
+
+**支持哪些世代由能力探测决定，不靠版本号字符串。** 装上框架后先看它的驱动面（`workers` 可
+赋值吗？`core.set_workers` 在吗？`shutdown` 可调用吗？），再按匹配到的那一代选驱动路径。刻意
+不看版本号：已发布的 `0.7.1b0` 在自己的元数据里写的是 `0.7.1-beta`，而未来世代的版本号无从
+预知。若驱动面与已知的任何一代都不匹配，harness 会**明确失败**并列出探测到了什么——不会悄悄
+退回某一代的路径，去测一件框架实际上并没有做的事。
 
 ### 怎么读这份报告
 
@@ -145,7 +168,7 @@ uv sync                                          # 或：pip install -e ".[dev]"
 zoo-bench run                                    # 测量 matrix.yaml 里的全部单元并留档原始数据
 zoo-bench render --framework 0.6.0 --out site/0.6.0
 zoo-bench index --site site
-zoo-bench compare 0.5.4b0 0.6.0 --out site/compare
+zoo-bench compare 0.6.0 0.7.1b0 --out site/compare
 ```
 
 - **`matrix.yaml` 是唯一真源**：测哪些框架版本、哪些适配器、哪些并发度与执行体档位，都写在
