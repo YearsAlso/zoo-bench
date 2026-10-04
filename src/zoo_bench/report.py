@@ -17,6 +17,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .attribution import SEGMENT_KEYS
+from .caliber import (
+    UNINTERPRETABLE_REASON,
+    logical_cores_from_environment,
+    overhead_is_interpretable,
+)
 from .runner import queueing_contaminated_groups
 
 #: 项目文档里的框架开销阈值。开销占比降到它以下，选用该框架的代价才算可忽略。
@@ -40,6 +46,28 @@ def _successful(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [unit for unit in units if unit["status"] == "ok"]
 
 
+def _unit_overhead_is_interpretable(unit: dict[str, Any], logical_cores: int | None) -> bool:
+    """某个测量单元的开销数字是否可当作开销来读。"""
+    return overhead_is_interpretable(
+        concurrency=int(unit["spec"]["concurrency"]),
+        logical_cores=logical_cores,
+        overhead_seconds=float(unit["absolute"]["framework_overhead_seconds"]),
+    )
+
+
+def withheld_overhead_groups(
+    units: list[dict[str, Any]], logical_cores: int | None
+) -> list[str]:
+    """被撤下开销数字的 (适配器/并发度) 组，供口径章节点名。"""
+    return sorted(
+        {
+            f"{unit['spec']['adapter']}/{unit['spec']['concurrency']}"
+            for unit in _successful(units)
+            if not _unit_overhead_is_interpretable(unit, logical_cores)
+        }
+    )
+
+
 def subject_name(units: list[dict[str, Any]]) -> str | None:
     """被测框架的适配器标识（tier 为 ``under_test`` 的那个）。"""
     for unit in units:
@@ -49,13 +77,19 @@ def subject_name(units: list[dict[str, Any]]) -> str | None:
 
 
 def _overhead_crossings(
-    units: list[dict[str, Any]], contaminated: set[tuple[str, int]]
+    units: list[dict[str, Any]],
+    contaminated: set[tuple[str, int]],
+    logical_cores: int | None,
 ) -> list[dict[str, Any]]:
     """各方案在多大的执行体时长下，框架开销占比降到阈值以下。
 
     **受排队污染的组不给交叉点**：并发度超出环境容量时端到端里含等待，除以并发度得到的
     "每任务开销"随之上升，此时算出来的交叉点不是框架开销的交叉点。原始值仍如实保留，
     只是不参与结论——否则头条会被一个排队数字左右。
+
+    **开销数字本身不可读的组也不给交叉点**：并发度超过机器并行能力时，那串比值不是一个可读的
+    序列（实测出现过负值），从它推交叉点等于从噪声里读结论。这类组连比值都不给，见
+    :mod:`zoo_bench.caliber`。
     """
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for unit in _successful(units):
@@ -65,23 +99,32 @@ def _overhead_crossings(
     crossings: list[dict[str, Any]] = []
     for (adapter, concurrency), group in sorted(grouped.items()):
         rows = sorted(group, key=lambda unit: unit["spec"]["body_tier_us"])
-        ratios = [float(row["absolute"]["framework_overhead_ratio"]) for row in rows]
         tiers = [float(row["spec"]["body_tier_us"]) for row in rows]
         polluted = (adapter, concurrency) in contaminated
+        interpretable = all(
+            _unit_overhead_is_interpretable(row, logical_cores) for row in rows
+        )
+        ratios = (
+            [float(row["absolute"]["framework_overhead_ratio"]) for row in rows]
+            if interpretable
+            else None
+        )
 
         first_below = (
             None
-            if polluted
+            if polluted or not interpretable
             else next(
                 (
                     tier
-                    for tier, ratio in zip(tiers, ratios, strict=True)
+                    for tier, ratio in zip(tiers, ratios or [], strict=True)
                     if ratio <= OVERHEAD_THRESHOLD
                 ),
                 None,
             )
         )
-        if polluted:
+        if not interpretable:
+            note = UNINTERPRETABLE_REASON
+        elif polluted:
             note = (
                 "该组并发度超出环境容量，端到端含排队等待，其开销数字不可当作框架开销，"
                 "故不给交叉点（原值仍在场供人工判读）"
@@ -100,6 +143,7 @@ def _overhead_crossings(
                 "overhead_ratios": ratios,
                 "first_tier_at_or_below_threshold_us": first_below,
                 "queueing_contaminated": polluted,
+                "uninterpretable": not interpretable,
                 "note": note,
             }
         )
@@ -171,11 +215,14 @@ def _summary(
     """
     lines: list[str] = []
 
+    # 只从**可读的**交叉点里下结论：并发度超出机器并行能力的那些组根本没有可读的比值，
+    # 从它们推结论等于从噪声里读结论（见 zoo_bench.caliber）。
+    readable = [crossing for crossing in crossings if not crossing.get("uninterpretable")]
+    subject_readable = [crossing for crossing in readable if crossing["adapter"] == subject]
     subject_crossings = [
         crossing
-        for crossing in crossings
-        if crossing["adapter"] == subject
-        and crossing["first_tier_at_or_below_threshold_us"] is not None
+        for crossing in subject_readable
+        if crossing["first_tier_at_or_below_threshold_us"] is not None
     ]
     if subject_crossings:
         shortest = min(crossing["first_tier_at_or_below_threshold_us"] for crossing in subject_crossings)
@@ -183,11 +230,16 @@ def _summary(
             f"被测框架 {subject} 的执行体时长达到约 {shortest:g} 微秒 及以上时，其框架开销占端到端的"
             f"比例降到 {OVERHEAD_THRESHOLD:.0%} 以下；短于此档位，选用它的主要代价就是框架开销本身。"
         )
-    else:
-        tiers = sorted({tier for crossing in crossings for tier in crossing["tiers_us"]})
+    elif subject_readable:
+        tiers = sorted({tier for crossing in subject_readable for tier in crossing["tiers_us"]})
         lines.append(
             f"在所测档位范围内，被测框架 {subject} 没有任何一档的框架开销占比降到 "
             f"{OVERHEAD_THRESHOLD:.0%} 以下；所测档位为 {tiers}。"
+        )
+    else:
+        lines.append(
+            f"被测框架 {subject} 的开销数字全部落在超出该机器并行能力的并发度上，"
+            "故本报告不给它的开销交叉点——端到端与吞吐仍然有效，见口径章节。"
         )
 
     for turning in turnings:
@@ -237,6 +289,7 @@ def _caveats(
     units: list[dict[str, Any]],
     verification: dict[str, Any],
     self_check: dict[str, Any],
+    logical_cores: int | None,
 ) -> list[dict[str, Any]]:
     """口径局限与偏差来源，逐条列明。"""
     caveats: list[dict[str, Any]] = []
@@ -307,6 +360,22 @@ def _caveats(
             }
         )
 
+    withheld = withheld_overhead_groups(units, logical_cores)
+    if withheld:
+        caveats.append(
+            {
+                "kind": "不给出开销数字的组",
+                "count": len(withheld),
+                "text": "以下 (适配器, 并发度) 组的并发度超过这次运行所在机器的并行能力："
+                "执行体自报的耗时里含超订带来的调度等待，与「墙钟 / 并发度」不是同一件事，"
+                "相减的结果没有意义（实测出现过负值，并衍生出无意义的变化倍数）。"
+                "故本报告对它们**不给框架开销、也不给交叉点**；端到端、吞吐与执行体自报值仍然有效，"
+                "原始留档里的字段也一个没删。判据取自环境自述的逻辑核数，另有一条证据性兜底："
+                "算出来的开销为负同样判为不可读——框架只会加时间不会减时间",
+                "groups": withheld,
+            }
+        )
+
     ungated = [
         check
         for check in self_check.get("body_deviation", {}).get("checks", [])
@@ -352,18 +421,32 @@ def _latency_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _overhead_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = [
-        {
-            "adapter": unit["spec"]["adapter"],
-            "concurrency": unit["spec"]["concurrency"],
-            "body_tier_us": unit["spec"]["body_tier_us"],
-            "framework_overhead_seconds": unit["absolute"]["framework_overhead_seconds"],
-            "framework_overhead_ratio": unit["absolute"]["framework_overhead_ratio"],
-            "body_seconds": unit["absolute"]["body_seconds"]["median"],
-        }
-        for unit in _successful(units)
-    ]
+def _overhead_dimension(units: list[dict[str, Any]], logical_cores: int | None) -> dict[str, Any]:
+    """框架开销维度。
+
+    **不可读的组不给数字**（见 :mod:`zoo_bench.caliber`）：并发度超出机器并行能力时，执行体自报
+    的耗时含超订的调度等待，与每任务端到端不可比。此时把两个数字置为 ``None`` 而不是留着让渲染
+    层去判断——留在模型里，任何一个后端都可能顺手把它印出来。
+    """
+    rows: list[dict[str, Any]] = []
+    for unit in _successful(units):
+        interpretable = _unit_overhead_is_interpretable(unit, logical_cores)
+        rows.append(
+            {
+                "adapter": unit["spec"]["adapter"],
+                "concurrency": unit["spec"]["concurrency"],
+                "body_tier_us": unit["spec"]["body_tier_us"],
+                "framework_overhead_seconds": (
+                    unit["absolute"]["framework_overhead_seconds"] if interpretable else None
+                ),
+                "framework_overhead_ratio": (
+                    unit["absolute"]["framework_overhead_ratio"] if interpretable else None
+                ),
+                "body_seconds": unit["absolute"]["body_seconds"]["median"],
+                "interpretable": interpretable,
+                "note": "" if interpretable else UNINTERPRETABLE_REASON,
+            }
+        )
     return {
         "title": "框架自身开销占比",
         "unit": "秒",
@@ -387,6 +470,158 @@ def _throughput_dimension(units: list[dict[str, Any]]) -> dict[str, Any]:
         "unit": "任务/秒",
         "rows": rows,
         "note": "吞吐 = 并发度 / 端到端中位数；随并发度是否继续上升即为伸缩性",
+    }
+
+
+#: 四段的显示名。键与顺序取自探针（:data:`zoo_bench.attribution.SEGMENT_KEYS`），这里只放标签
+#: ——三个后端共用同一套，各写一份必然漂移。
+ATTRIBUTION_SEGMENT_LABELS: dict[str, str] = {
+    "submit_side_seconds": "提交侧",
+    "handoff_seconds": "手交",
+    "body_seconds": "执行体",
+    "return_seconds": "回程",
+}
+
+#: 被测框架提交侧的细分桶与显示名。
+ATTRIBUTION_DRILL_LABELS: dict[str, str] = {
+    "scheduling_round_seconds": "调度轮其余（判定、锁与调度列表维护）",
+    "dispatch_seconds": "派发（交给调度模型，含池的入队）",
+    "policy_lookup_seconds": "每轮策略查询（周期/相位/超时各查一次配置）",
+    "submit_side_other_seconds": "提交侧其他（适配器自己的记账与完成信号状态）",
+}
+
+
+def _attribution_findings(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """逐 (档位, 并发度)：被测框架相对各对照方案，超出部分落在哪一段。
+
+    **结论必须指到段**：只给"多花 57 微秒"读者不知道下一步动哪里，而那正是这一维存在的理由。
+    故每个对照方案都给一份逐段差额，并点出差额最大的那一段。
+    """
+    by_key: dict[tuple[float, int], dict[str, dict[str, Any]]] = {}
+    for group in groups:
+        if group.get("status") != "ok":
+            continue
+        by_key.setdefault((float(group["tier_us"]), int(group["concurrency"])), {})[
+            group["adapter"]
+        ] = group
+
+    findings: list[dict[str, Any]] = []
+    for (tier, concurrency), group in sorted(by_key.items()):
+        subject = next(
+            (item for item in group.values() if item.get("adapter_tier") == "under_test"), None
+        )
+        if subject is None:
+            continue
+
+        rows: list[dict[str, Any]] = []
+        for adapter, other in sorted(group.items()):
+            if adapter == subject["adapter"] or not other.get("comparable", True):
+                continue
+            excess = {
+                key: subject["segments"][key] - other["segments"][key] for key in SEGMENT_KEYS
+            }
+            dominant = max(excess, key=lambda key: excess[key])
+            rows.append(
+                {
+                    "adapter": adapter,
+                    "subject_end_to_end_seconds": subject["end_to_end_seconds"],
+                    "other_end_to_end_seconds": other["end_to_end_seconds"],
+                    "excess_seconds": subject["end_to_end_seconds"] - other["end_to_end_seconds"],
+                    "segment_excess_seconds": excess,
+                    "dominant_segment": dominant,
+                }
+            )
+        if rows:
+            findings.append(
+                {
+                    "tier_us": tier,
+                    "concurrency": concurrency,
+                    "subject": subject["adapter"],
+                    "subject_segments": subject["segments"],
+                    "subject_drill_down": subject.get("drill_down") or {},
+                    "per_adapter": rows,
+                }
+            )
+    return findings
+
+
+def _attribution_summary(findings: list[dict[str, Any]]) -> list[str]:
+    """结论摘要：超出部分落在哪一段，以及被测框架自己的提交侧由什么构成。"""
+    lines: list[str] = []
+    for finding in findings:
+        for row in finding["per_adapter"]:
+            dominant = row["dominant_segment"]
+            lines.append(
+                f"并发度 {finding['concurrency']}、执行体 {finding['tier_us']:g} 微秒 下，"
+                f"被测框架相对 {row['adapter']} 每任务多花 {row['excess_seconds'] * 1e6:.0f} 微秒，"
+                f"其中主要落在「{ATTRIBUTION_SEGMENT_LABELS[dominant]}」"
+                f"（{row['segment_excess_seconds'][dominant] * 1e6:+.0f} 微秒）。"
+            )
+        drill = finding["subject_drill_down"]
+        if drill:
+            parts = "、".join(
+                f"{ATTRIBUTION_DRILL_LABELS[key]} {drill[key] * 1e6:.0f}"
+                for key in ATTRIBUTION_DRILL_LABELS
+                if key in drill
+            )
+            lines.append(
+                f"被测框架在该组的提交侧由以下部分构成（微秒）：{parts}。"
+            )
+    return lines
+
+
+def _not_probed_attribution() -> dict[str, Any]:
+    """归因在**连探查都没跑**时的占位。
+
+    与"跑了但某组不可测"不同：那是结论，这是遗漏。报告里必须能看出是哪一种。
+    """
+    return {
+        "title": "开销归因",
+        "status": "not_probed",
+        "scope_note": (
+            "把每任务端到端拆成提交侧 / 手交 / 执行体 / 回程四段，并在同一档位与并发度下"
+            "**与各对照方案逐段对照**，回答「超出对照的部分落在哪一段」。它**不与对照方案比总开销**"
+            "——总开销已经有了；这一维只回答「下一步该看哪里」"
+        ),
+        "segment_labels": ATTRIBUTION_SEGMENT_LABELS,
+        "drill_labels": ATTRIBUTION_DRILL_LABELS,
+        "groups": [],
+        "findings": [],
+        "summary": [],
+        "reason": "本轮运行未包含开销归因探查（以 with_attribution=False 运行）",
+    }
+
+
+def _attribution_dimension(result: dict[str, Any]) -> dict[str, Any]:
+    """开销归因维度：四段、细分与逐段结论。"""
+    attribution = result.get("attribution")
+    if not attribution:
+        return _not_probed_attribution()
+
+    groups = list(attribution.get("groups") or [])
+    findings = _attribution_findings(groups)
+    measured = [group for group in groups if group.get("status") == "ok"]
+    return {
+        "title": "开销归因",
+        "status": "ok" if measured else "not_measured",
+        "scope_note": (
+            "把每任务端到端拆成提交侧 / 手交 / 执行体 / 回程四段，并在同一档位与并发度下"
+            "**与各对照方案逐段对照**，回答「超出对照的部分落在哪一段」。它是**诊断**而非主证据："
+            "抽样一小批档位，且不与对照方案比总开销。"
+            "**手交为负不是错误**：那表示提交调用还没返回、执行体就已经开跑——"
+            "把建线程一类工作算进提交侧的方案就会这样（实测 bare_thread 手交 -343 微秒）。"
+            "**回程含完成信号的等待**（排空返回前的最后一段），它与主测量是同一口径"
+        ),
+        "segment_labels": ATTRIBUTION_SEGMENT_LABELS,
+        "drill_labels": ATTRIBUTION_DRILL_LABELS,
+        "cores": attribution.get("cores"),
+        "tiers_us": attribution.get("tiers_us", []),
+        "concurrencies": attribution.get("concurrencies", []),
+        "note": attribution.get("note", ""),
+        "groups": groups,
+        "findings": findings,
+        "summary": _attribution_summary(findings),
+        "reason": "" if measured else "本轮归因的每一组都没能量成，见逐组原因",
     }
 
 
@@ -438,13 +673,16 @@ def build_model(
         (group["adapter"], group["concurrency"])
         for group in queueing_contaminated_groups(self_check)
     }
-    crossings = _overhead_crossings(units, contaminated)
-    turnings = _relative_turnings(result, subject)
-
     resolved_semantics = semantics if semantics is not None else result.get("semantics")
     resolved_environment = (
         environment if environment is not None else result.get("environment")
     )
+    # 机器并行能力取自**同一次运行**的环境自述：它是"开销这个减式成立与否"的判据，
+    # 跨运行借用另一台机器的核数就会判错（见 zoo_bench.caliber）。
+    logical_cores = logical_cores_from_environment(resolved_environment)
+
+    crossings = _overhead_crossings(units, contaminated, logical_cores)
+    turnings = _relative_turnings(result, subject)
 
     return {
         "schema": MODEL_SCHEMA,
@@ -467,14 +705,15 @@ def build_model(
         },
         "dimensions": {
             "latency": _latency_dimension(units),
-            "overhead": _overhead_dimension(units),
+            "overhead": _overhead_dimension(units, logical_cores),
             "throughput": _throughput_dimension(units),
             "semantics": resolved_semantics
             if resolved_semantics is not None
             else _unmeasured_semantics(),
+            "attribution": _attribution_dimension(result),
         },
         "unfavorable": _unfavorable(result, subject),
-        "caveats": _caveats(units, result.get("verification", {}), self_check),
+        "caveats": _caveats(units, result.get("verification", {}), self_check, logical_cores),
         "absolute": {
             "note": result.get("run", {}).get("absolute_note"),
             "process_isolation": result.get("process_isolation", {}),

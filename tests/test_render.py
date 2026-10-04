@@ -419,3 +419,142 @@ def test_render_reports_which_versions_are_archived(tmp_path: Path) -> None:
     """没给 --data 也没给 --framework 时，要告诉用户已留档了什么，而不是只说"需要参数"。"""
     code = cli.main(["render", "--results", str(tmp_path / "empty"), "--out", str(tmp_path / "site")])
     assert code == 2
+
+
+def test_overhead_table_explains_a_withheld_row() -> None:
+    """表里出现"—"时必须**当场**说明它是什么意思。
+
+    读者要跨到口径章节才知道，等于让他猜；而"—"在这里可能有两个完全不同的原因（受排队污染、
+    或开销数字本身不可读），光看一个横杠分不出来。
+    """
+    model = _model()
+    model["dimensions"]["overhead"]["rows"][0].update(
+        {
+            "framework_overhead_seconds": None,
+            "framework_overhead_ratio": None,
+            "interpretable": False,
+            "note": "该并发度超过这次运行所在机器的并行能力",
+        }
+    )
+    model["conclusion"]["overhead_crossings"] = [
+        {
+            "adapter": "zoo",
+            "concurrency": 64,
+            "threshold": 0.15,
+            "tiers_us": [300.0],
+            "overhead_ratios": None,
+            "first_tier_at_or_below_threshold_us": None,
+            "queueing_contaminated": False,
+            "uninterpretable": True,
+            "note": "该并发度超过这次运行所在机器的并行能力：相减的结果没有意义。",
+        }
+    ]
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "带 — 的行" in text, "开销表要说明横杠的含义"
+    assert "并行能力" in text
+    assert "相减的结果没有意义" in text, "交叉点表要把那一行的原因带出来，而不是只给一个横杠"
+
+
+def test_overhead_table_gets_no_explanation_when_every_row_is_readable() -> None:
+    """全部可读时不加那句说明——多余的话会让读者去找一个并不存在的例外。"""
+    text = markdown_renderer.render_markdown(_model(), [])
+
+    assert "带 — 的行" not in text
+
+
+def test_attribution_section_renders_segments_and_the_conclusion() -> None:
+    """归因维度要能读出来：四段、逐段对照、以及"落在哪一段"的结论。
+
+    与其余维度同样的要求——**三种格式同源**，故这里只验块层；若渲染层自己写了一句结论，
+    它就会与另外两个后端说的不一样。
+    """
+    model = _model()
+    model["dimensions"]["attribution"] = {
+        "title": "开销归因",
+        "status": "ok",
+        "scope_note": "口径说明",
+        "segment_labels": {
+            "submit_side_seconds": "提交侧",
+            "handoff_seconds": "手交",
+            "body_seconds": "执行体",
+            "return_seconds": "回程",
+        },
+        "drill_labels": {"policy_lookup_seconds": "每轮策略查询（周期/相位/超时各查一次配置）"},
+        "cores": 4,
+        "tiers_us": [300.0, 2700.0],
+        "concurrencies": [1],
+        "note": "本维度是诊断",
+        "groups": [
+            {
+                "adapter": "zoo",
+                "tier_us": 300.0,
+                "concurrency": 1,
+                "status": "ok",
+                "reason": "",
+                "segments": {
+                    "submit_side_seconds": 70e-6,
+                    "handoff_seconds": 20e-6,
+                    "body_seconds": 300e-6,
+                    "return_seconds": 30e-6,
+                },
+            },
+            {
+                "adapter": "process_pool",
+                "tier_us": 300.0,
+                "concurrency": 1,
+                "status": "not_measurable",
+                "reason": "执行体的起止时刻读不到",
+            },
+        ],
+        "findings": [
+            {
+                "tier_us": 300.0,
+                "concurrency": 1,
+                "subject": "zoo",
+                "subject_segments": {
+                    "submit_side_seconds": 70e-6,
+                    "handoff_seconds": 20e-6,
+                    "body_seconds": 300e-6,
+                    "return_seconds": 30e-6,
+                },
+                "subject_drill_down": {"policy_lookup_seconds": 5e-6},
+                "per_adapter": [
+                    {
+                        "adapter": "thread_pool",
+                        "excess_seconds": 60e-6,
+                        "segment_excess_seconds": {"submit_side_seconds": 60e-6},
+                        "dominant_segment": "submit_side_seconds",
+                    }
+                ],
+            }
+        ],
+        "summary": ["并发度 1、执行体 300 微秒 下，被测框架相对 thread_pool 每任务多花 60 微秒，其中主要落在「提交侧」（+60 微秒）。"],
+        "reason": "",
+    }
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "维度：开销归因" in text
+    assert "提交侧" in text and "回程" in text, "四段都要在表里"
+    assert "超出各对照方案的部分落在哪一段" in text
+    assert "thread_pool" in text
+    assert "主要落在" in text or "落在「提交侧」" in text
+    assert "not_measurable" in text or "不可测" in text, "量不成的组要标出来"
+    assert "每轮策略查询" in text, "被测框架的细分要单独呈现"
+    # 导出前门禁：这张表里的每个字符中文字体都得有
+    from zoo_bench.render.blocks import assert_report_text_is_renderable
+
+    assert_report_text_is_renderable(text)
+
+
+def test_a_model_without_the_attribution_key_still_renders() -> None:
+    """模型里没有这一维时渲染不能炸（占位由报告模型负责，见 test_report_model 的对应用例）。
+
+    这条防的是另一件事：旧留档重新渲染时模型里可能没有这个键，而渲染层若直接下标取值就会崩。
+    """
+    text = markdown_renderer.render_markdown(_model(), [])
+
+    assert "维度：开销归因" in text
+    assert "抽样档位" not in text, "没有数据时不摆一张空表"

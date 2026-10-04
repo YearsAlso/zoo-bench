@@ -480,9 +480,22 @@ def test_semantics_dimension_is_used_verbatim_when_measured() -> None:
     assert model["dimensions"]["semantics"] == measured
 
 
-def test_all_four_dimensions_are_present() -> None:
+def test_every_dimension_is_present_even_when_its_probe_did_not_run() -> None:
+    """维度缺失会被读成"这一维不存在"——故未探查时给**占位**而不是省略。
+
+    占位与"跑了但不可测"必须能区分（前者是遗漏、后者是结论），故两者的 ``status`` 不同。
+    """
     model = build_model(_result([]))
-    assert set(model["dimensions"]) == {"latency", "overhead", "throughput", "semantics"}
+
+    assert set(model["dimensions"]) == {
+        "latency",
+        "overhead",
+        "throughput",
+        "semantics",
+        "attribution",
+    }
+    assert model["dimensions"]["attribution"]["status"] == "not_probed"
+    assert model["dimensions"]["attribution"]["reason"], "未探查要说明为什么"
 
 
 def test_subject_is_identified_by_tier_not_by_name() -> None:
@@ -506,3 +519,243 @@ def test_metric_dimensions_report_a_unit_and_a_note(name: str) -> None:
     assert dimension["unit"]
     assert dimension["note"]
     assert dimension["rows"]
+
+
+# ------------------------------------------------------------------ 开销数字的适用口径
+
+
+def _environment(cores: int) -> dict[str, Any]:
+    return {"hardware": {"logical_cores": cores}, "harness": {"version": "0.0.1"}}
+
+
+def _wide_and_narrow() -> list[dict[str, Any]]:
+    """一组"超并行能力"的单元与一组正常的单元，形态照实测抄。
+
+    实测（CI runner，4 逻辑核，并发 64，10000 微秒档）：每任务端到端 10.5 毫秒，执行体**自报**
+    耗时中位 106.5 毫秒（超订把它抬高了约 10.6 倍），相减得 −913.8%。
+    """
+    return [
+        _subject_unit(tier_us=10000, e2e_per_task=0.0105, body=0.1065, concurrency=64),
+        _subject_unit(tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=4),
+    ]
+
+
+def test_overhead_is_withheld_above_the_machines_parallelism() -> None:
+    """并发度超过机器并行能力时，开销与交叉点都不给——那个减式的结果没有意义。"""
+    model = build_model(_result(_wide_and_narrow()), environment=_environment(4))
+
+    rows = {row["concurrency"]: row for row in model["dimensions"]["overhead"]["rows"]}
+    assert rows[64]["interpretable"] is False
+    assert rows[64]["framework_overhead_seconds"] is None, "不可读时连数字都不给，别指望渲染层去判断"
+    assert rows[64]["framework_overhead_ratio"] is None
+    assert rows[64]["body_seconds"] == 0.1065, "执行体自报值仍然有效，必须照旧给出"
+    assert rows[4]["interpretable"] is True
+    assert rows[4]["framework_overhead_ratio"] is not None
+
+    crossings = {c["concurrency"]: c for c in model["conclusion"]["overhead_crossings"]}
+    assert crossings[64]["uninterpretable"] is True
+    assert crossings[64]["overhead_ratios"] is None
+    assert crossings[64]["first_tier_at_or_below_threshold_us"] is None
+    assert crossings[4]["uninterpretable"] is False
+
+
+def test_the_withheld_groups_are_named_in_the_caliber_caveats() -> None:
+    """撤下数字必须点名到组——读者要能一眼看出该跳过哪几行。"""
+    model = build_model(_result(_wide_and_narrow()), environment=_environment(4))
+
+    caveat = next(c for c in model["caveats"] if c["kind"] == "不给出开销数字的组")
+    assert caveat["groups"] == ["zoo/64"]
+    assert "负值" in caveat["text"], "要给出判否的证据形态，读者才知道这不是阈值卡出来的"
+
+
+def test_a_negative_overhead_is_withheld_even_with_plenty_of_cores() -> None:
+    """证据性那条在结构性那条失效时仍要生效。
+
+    容器 CPU 配额可能低于 runner 报的核数——那时 `concurrency > cores` 会放行仍然超订的组，
+    而"开销为负"照样能把它认出来（框架只会加时间不会减时间）。
+    """
+    units = [_subject_unit(tier_us=10000, e2e_per_task=0.0105, body=0.1065, concurrency=64)]
+
+    withheld = build_model(_result(units), environment=_environment(4))
+    survived = build_model(_result(units), environment=_environment(256))
+
+    assert withheld["dimensions"]["overhead"]["rows"][0]["interpretable"] is False
+    assert survived["dimensions"]["overhead"]["rows"][0]["interpretable"] is False, (
+        "核数给得再大，负开销仍然判不可读——这条不依赖核数估计"
+    )
+
+
+def test_missing_environment_does_not_withhold_a_positive_overhead() -> None:
+    """环境自述缺失时**不据此判否**：缺一项就把整列抹掉，比给一个可能无效的数字更坏。"""
+    units = [_subject_unit(tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=64)]
+
+    model = build_model(_result(units))
+
+    assert model["dimensions"]["overhead"]["rows"][0]["interpretable"] is True
+    assert not any(c["kind"] == "不给出开销数字的组" for c in model["caveats"])
+
+
+def test_summary_says_why_no_crossing_is_given_when_everything_is_withheld() -> None:
+    """全部组都不可读时，结论必须说清"是没给"而不是"没有一档达标"——两者含义相反。"""
+    units = [_subject_unit(tier_us=10000, e2e_per_task=0.0105, body=0.1065, concurrency=64)]
+
+    summary = " ".join(build_model(_result(units), environment=_environment(4))["conclusion"]["summary"])
+
+    assert "超出该机器并行能力" in summary
+    assert "没有任何一档" not in summary, "不可读不能读成「测了但不达标」"
+
+
+# ------------------------------------------------------------------ 开销归因维度
+
+
+def _attribution_result(groups: list[dict[str, Any]], *, cores: int = 4) -> dict[str, Any]:
+    return {
+        "cores": cores,
+        "tiers_us": sorted({float(group["tier_us"]) for group in groups}),
+        "concurrencies": sorted({int(group["concurrency"]) for group in groups}),
+        "groups": groups,
+        "note": "本维度是诊断不是主证据",
+    }
+
+
+def _group(
+    adapter: str,
+    *,
+    tier_us: float = 300.0,
+    concurrency: int = 1,
+    submit_side: float = 10e-6,
+    handoff: float = 20e-6,
+    body: float = 300e-6,
+    back: float = 30e-6,
+    tier: str = "bare",
+    drill: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    segments = {
+        "submit_side_seconds": submit_side,
+        "handoff_seconds": handoff,
+        "body_seconds": body,
+        "return_seconds": back,
+    }
+    return {
+        "adapter": adapter,
+        "adapter_tier": tier,
+        "comparable": True,
+        "tier_us": tier_us,
+        "concurrency": concurrency,
+        "status": "ok",
+        "reason": "",
+        "segments": segments,
+        "end_to_end_seconds": sum(segments.values()),
+        "consistency": {"max_deviation": 0.0, "tolerance": 0.02, "ok": True},
+        "seals": ["seal-a"] if drill else [],
+        "drill_down": drill or {},
+        "instrumentation": {},
+    }
+
+
+def test_attribution_names_the_segment_that_holds_the_excess() -> None:
+    """结论必须指到**段**——只说"多花 57 微秒"读者不知道下一步动哪里。
+
+    这里让被测框架的提交侧远大于对照方案、其余三段相同：超出部分应落在「提交侧」。
+    """
+    result = _result([])
+    result["attribution"] = _attribution_result(
+        [
+            _group("zoo", submit_side=70e-6, tier="under_test"),
+            _group("thread_pool", submit_side=10e-6),
+        ]
+    )
+
+    model = build_model(result)
+    dimension = model["dimensions"]["attribution"]
+
+    assert dimension["status"] == "ok"
+    finding = dimension["findings"][0]
+    row = finding["per_adapter"][0]
+    assert row["adapter"] == "thread_pool"
+    assert row["dominant_segment"] == "submit_side_seconds"
+    assert row["excess_seconds"] == pytest.approx(60e-6)
+    assert row["segment_excess_seconds"]["submit_side_seconds"] == pytest.approx(60e-6)
+    assert "提交侧" in dimension["summary"][0], "结论句要点到段名"
+
+
+def test_attribution_lists_every_comparable_side_by_side() -> None:
+    """每个对照方案都要逐段给出——没有对照的分解回答不了"超出落在哪"。"""
+    result = _result([])
+    result["attribution"] = _attribution_result(
+        [
+            _group("zoo", tier="under_test"),
+            _group("thread_pool", back=5e-6),
+            _group("bare_thread", back=50e-6),
+        ]
+    )
+
+    model = build_model(result)
+
+    rows = model["dimensions"]["attribution"]["findings"][0]["per_adapter"]
+    assert {row["adapter"] for row in rows} == {"thread_pool", "bare_thread"}
+
+
+def test_attribution_skips_adapters_that_are_not_comparable() -> None:
+    """与进程内派发不同架构的方案不参与逐段对照——它的段与段之间不可比。"""
+    result = _result([])
+    incomparable = _group("process_pool")
+    incomparable["comparable"] = False
+    result["attribution"] = _attribution_result([_group("zoo", tier="under_test"), incomparable])
+
+    model = build_model(result)
+
+    assert model["dimensions"]["attribution"]["findings"] == [], "没有可比对象时不给结论"
+
+
+def test_attribution_keeps_groups_it_could_not_measure() -> None:
+    """量不成的组**留在场**并带上原因——抹掉它会让读者以为那一档不存在。"""
+    result = _result([])
+    unmeasurable = {
+        "adapter": "process_pool",
+        "adapter_tier": "stdlib",
+        "comparable": True,
+        "tier_us": 300.0,
+        "concurrency": 1,
+        "status": "not_measurable",
+        "reason": "执行体的起止时刻读不到——它没有在本进程里运行",
+        "seals": [],
+    }
+    result["attribution"] = _attribution_result([_group("zoo", tier="under_test"), unmeasurable])
+
+    dimension = build_model(result)["dimensions"]["attribution"]
+
+    kept = next(group for group in dimension["groups"] if group["adapter"] == "process_pool")
+    assert kept["status"] == "not_measurable"
+    assert "本进程" in kept["reason"], "原因要留在场，读者才知道为什么这一组没有分段"
+
+
+def test_attribution_reports_the_subject_drill_down_separately() -> None:
+    """被测框架的提交侧细分要与对照方案分开呈现——对照方案没有被拆不是因为它没有结构。"""
+    drill = {
+        "scheduling_round_seconds": 40e-6,
+        "dispatch_seconds": 15e-6,
+        "policy_lookup_seconds": 5e-6,
+        "submit_side_other_seconds": 5e-6,
+    }
+    result = _result([])
+    result["attribution"] = _attribution_result(
+        [_group("zoo", tier="under_test", drill=drill), _group("thread_pool")]
+    )
+
+    dimension = build_model(result)["dimensions"]["attribution"]
+
+    assert dimension["findings"][0]["subject_drill_down"] == drill
+    assert any("策略查询" in line for line in dimension["summary"]), "细分要进结论句"
+
+
+def test_attribution_is_marked_unprobed_when_the_probe_never_ran() -> None:
+    """未探查与"跑了但不可测"必须分得开：前者是遗漏，后者是结论。"""
+    result = _result([])
+    result["attribution"] = None
+
+    dimension = build_model(result)["dimensions"]["attribution"]
+
+    assert dimension["status"] == "not_probed"
+    assert dimension["reason"]
+    assert dimension["segment_labels"], "标签即使在未探查时也要在场"

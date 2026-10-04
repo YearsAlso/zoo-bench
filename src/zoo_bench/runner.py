@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .caliber import exceeds_machine_parallelism
 from .metrics import summarize
 
 #: 单个子进程的上限（秒）。不是被测指标，只用于避免挂死时整轮无终止。
@@ -407,6 +408,97 @@ def grade_body_deviation(units: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _attribution_specs(
+    specs: list[UnitSpec], *, cores: int | None, warmup_rounds: int, measured_rounds: int
+) -> list[dict[str, Any]]:
+    """归因要量的组：参与测量的每个适配器 × **两档** × **不超过机器并行能力的并发度**。
+
+    档位取矩阵里最短与最长各一档：最短那档多半短到不值得分解（由探针如实标为不可靠），
+    最长那档给出可读的分段——两个极端各自说明一类事实。
+
+    并发度的上界是**机器核数**而不是矩阵里的最大值：超过它时提交侧那几段量到的是"提交线程与
+    正在跑的执行体争 CPU"的等待（实测同一组在 4 核机上从几十微秒涨到几百微秒），那是争用而
+    不是框架。这与报告里"开销只在可比范围内给出"是同一条判据（见 :mod:`zoo_bench.caliber`）。
+    """
+    adapters = sorted({spec.adapter for spec in specs})
+    tiers = sorted({spec.body_tier_us for spec in specs})
+    concurrencies = sorted({spec.concurrency for spec in specs})
+    if not (adapters and tiers and concurrencies):
+        return []
+
+    tiers = sorted({tiers[0], tiers[-1]})
+    within = [value for value in concurrencies if not exceeds_machine_parallelism(value, cores)]
+    # 一个都不在能力范围内时（核数比矩阵里最低的并发度还小）仍取最低那档，并由 note 说明
+    # 本轮是在超订下量的——不因此一条都不量，那会让整个维度凭空消失
+    chosen = sorted({concurrencies[0], *(within or [concurrencies[0]])})
+
+    extra: dict[str, list[str]] = {}
+    for spec in specs:
+        extra.setdefault(spec.adapter, []).extend(spec.extra_modules)
+
+    return [
+        {
+            "adapter": adapter,
+            "body_tier_us": tier,
+            "concurrency": concurrency,
+            "warmup_rounds": warmup_rounds,
+            "measured_rounds": measured_rounds,
+            "extra_modules": sorted(set(extra.get(adapter, []))),
+        }
+        for adapter in adapters
+        for tier in tiers
+        for concurrency in chosen
+    ]
+
+
+def _run_attribution(specs: list[UnitSpec]) -> dict[str, Any]:
+    """跑归因探查。**失败不上升为阻塞**：它是诊断维度，某一个组量不成不该毁掉整轮测量。"""
+    cores = os.cpu_count()
+    warmup_rounds = min((spec.warmup_rounds for spec in specs), default=DEFAULT_WARMUP_ROUNDS)
+    measured_rounds = min((spec.measured_rounds for spec in specs), default=DEFAULT_MEASURED_ROUNDS)
+    planned = _attribution_specs(
+        specs, cores=cores, warmup_rounds=warmup_rounds, measured_rounds=measured_rounds
+    )
+
+    groups: list[dict[str, Any]] = []
+    for spec in planned:
+        outcome = run_in_child("attribution", spec)
+        if outcome["status"] == "ok":
+            groups.append(outcome["payload"])
+        else:
+            groups.append(
+                {
+                    **spec,
+                    "status": "probe_failed",
+                    "reason": outcome.get("error", ""),
+                    "stderr": outcome.get("stderr", ""),
+                    "seals": [],
+                }
+            )
+
+    over_subscribed = [
+        concurrency
+        for concurrency in sorted({spec["concurrency"] for spec in planned})
+        if exceeds_machine_parallelism(concurrency, cores)
+    ]
+    return {
+        "cores": cores,
+        "tiers_us": sorted({spec["body_tier_us"] for spec in planned}),
+        "concurrencies": sorted({spec["concurrency"] for spec in planned}),
+        "groups": groups,
+        "over_subscribed_concurrencies": over_subscribed,
+        "note": (
+            "本维度是**诊断**不是主证据：抽样的档位与并发度固定为一小批，不覆盖矩阵里的全部单元。"
+            "并发度上界取机器的并行能力——超过它时量到的是争用；"
+            + (
+                f"本轮机器并行能力低于矩阵里最低的并发度，故 {over_subscribed} 仍是在超订下量的。"
+                if over_subscribed
+                else ""
+            )
+        ),
+    }
+
+
 def _run_self_check(
     units: list[dict[str, Any]], verification: dict[str, Any]
 ) -> dict[str, Any]:
@@ -484,6 +576,7 @@ def measure_matrix(
     verify_adapters: bool = True,
     verify_concurrency: int = DEFAULT_VERIFY_CONCURRENCY,
     with_semantics: bool = True,
+    with_attribution: bool = True,
 ) -> dict[str, Any]:
     """跑完一批测量单元，返回运行结果。
 
@@ -493,6 +586,7 @@ def measure_matrix(
         verify_concurrency: 等价性验证使用的并发度。
         with_semantics: 是否探查调度语义维度（design D7）。探查在独立子进程内跑，
             结论带证据——"没有一项可测"也是结论，与"遗漏未测"必须区分得开。
+        with_attribution: 是否跑开销归因探查（四段分解）。它同样是诊断维度，抽样一小批组即够。
 
     Returns:
         含 ``run`` / ``units`` / ``verification`` / ``process_isolation`` / ``self_check`` /
@@ -530,6 +624,10 @@ def measure_matrix(
                     "extra_modules": sorted(set(extra)),
                 },
             )
+
+    attribution: dict[str, Any] | None = None
+    if with_attribution:
+        attribution = _run_attribution(specs)
 
     units: list[dict[str, Any]] = []
     for spec in specs:
@@ -578,4 +676,5 @@ def measure_matrix(
         "self_check": _run_self_check(units, verification),
         "relative": _relative_block(units),
         "semantics": semantics,
+        "attribution": attribution,
     }

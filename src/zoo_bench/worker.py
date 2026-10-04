@@ -25,7 +25,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from .adapters import registry
+from .adapters import Tier, registry
+from .attribution import probe_group
 from .semantics import probe_semantics
 from .workloads.body import body_for_tier
 from .workloads.identity import MarkerBody, expected_markers, matches_expected_set
@@ -123,6 +124,25 @@ def measure_unit(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def probe_attribution_task(spec: dict[str, Any]) -> dict[str, Any]:
+    """把一个 (适配器, 档位, 并发度) 组的四段量出来。
+
+    **是否细分由被测与否决定，不由调用方指定**：细分是给"下一步动哪里"用的，只对被测框架有意义；
+    让调用方传这个标志会多一处可传错的东西，而适配器自己知道自己是哪一档（``tier``）。
+    """
+    adapter_cls = _load_adapter(spec)
+    drill = adapter_cls.tier is Tier.UNDER_TEST
+    return probe_group(
+        adapter_cls.name,
+        tier_us=float(spec["body_tier_us"]),
+        concurrency=int(spec["concurrency"]),
+        warmup_rounds=int(spec["warmup_rounds"]),
+        measured_rounds=int(spec["measured_rounds"]),
+        drill=drill,
+        extra_modules=tuple(spec.get("extra_modules") or ()),
+    )
+
+
 def probe_semantics_task(spec: dict[str, Any]) -> dict[str, Any]:
     """调度语义维度的探查。
 
@@ -136,9 +156,10 @@ _KINDS = {
     "verify": verify_equivalence,
     "measure": measure_unit,
     "semantics": probe_semantics_task,
+    "attribution": probe_attribution_task,
 }
 
-_USAGE = "用法: python -m zoo_bench.worker <verify|measure|semantics> <spec-json> <out-path>"
+_USAGE = "用法: python -m zoo_bench.worker <verify|measure|semantics|attribution> <spec-json> <out-path>"
 
 
 def main(argv: list[str] | None = None) -> int:

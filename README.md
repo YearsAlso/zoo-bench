@@ -27,6 +27,7 @@ public report in **HTML / Markdown / PDF**.
 | How does the framework compare to bare threads, `ThreadPoolExecutor`, `asyncio`, `ProcessPoolExecutor` and `APScheduler`, and **at which task durations**? | Whether a given change regressed performance. That would be a CI gate; this publishes a report. |
 | **Where does the framework lose?** — published explicitly, not buried. | How it compares to Rust. That was settled as *no-go* in the framework repo's [`bench/`](https://github.com/YearsAlso/zoo-framework/tree/dev/bench). |
 | What does the framework's own overhead cost per task, and at what task duration does it stop dominating? | What the framework's *scheduling semantics* cost — see below. |
+| **Where does that overhead go?** — decomposed into submit path / handoff / body / completion, **segment by segment against each baseline** | What to change. The report names the segment holding the excess and the framework seams it wrapped; the fix itself is a framework-side decision. |
 
 **The scheduling-semantics dimension is measured per framework generation, and its conclusion is
 scoped to the generation it was derived on.** On the older generation (`zoo-framework==0.6.0`) it
@@ -56,6 +57,10 @@ back to one generation's path and measures something the framework does not actu
   serialized from the same block list, so they cannot disagree with each other.
 - **The raw data is public**: `results/<framework-version>/<timestamp>.json` in this repository,
   containing **per-round samples** (not just aggregates), so the aggregation itself can be audited.
+- **Where the overhead goes** is itself a report dimension: per-task end-to-end split into four
+  segments, compared segment-by-segment against each baseline. It samples a small fixed set of
+  tiers and concurrencies (it is a diagnosis, not the headline evidence) and publishes the cost of
+  its own instrumentation so readers can discount it.
 - Version over version: `zoo-bench compare <v1> <v2>`. The site also publishes a **comparison page
   for each adjacent pair in `matrix.yaml`**, so "what changed since the previous version" is
   readable online rather than only from the CLI.
@@ -104,7 +109,7 @@ measure queueing and scheduling granularity, not the framework.
 ### Layout
 
 ```
-src/zoo_bench/     harness: adapters/ runner/ workloads/ render/ metrics/ semantics/ cli
+src/zoo_bench/     harness: adapters/ runner/ workloads/ render/ metrics/ semantics/ attribution/ cli
 matrix.yaml        what to measure
 results/           archived raw data (committed — public and version-addressed)
 openspec/specs/    authoritative specs (three capabilities)
@@ -116,6 +121,11 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
 - At concurrency above the machine's capacity, overhead figures **include queueing**; the report
   names those groups and withholds their crossing points rather than letting a queueing number
   drive the headline.
+- **Framework overhead is not published above the machine's parallelism.** At those levels each
+  body's self-reported duration carries the scheduler's descheduling wait, so subtracting it from
+  "wall clock ÷ concurrency" is meaningless — measured at −913.8% for 64-way work on a 4-core
+  runner. End-to-end, throughput and the bodies' own numbers stay in the report; the withheld
+  groups are named, with the reason.
 - On CI this runs on a shared `ubuntu-latest` runner: relative comparisons hold, absolute numbers
   drift between runs.
 - Every push to `main` commits roughly **7.6 MB** of raw data to this repository (three targets,
@@ -144,6 +154,7 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
 | 相对裸线程、`ThreadPoolExecutor`、`asyncio`、`ProcessPoolExecutor`、`APScheduler`，本框架快不快，**以及在哪些任务时长上快** | 某次改动有没有造成性能回退。那是 CI 门禁该做的事；这份东西出的是报告 |
 | **本框架在哪里输** —— 明确列出，不藏在脚注里 | 相对 Rust 如何。那个问题已在框架仓库的 [`bench/`](https://github.com/YearsAlso/zoo-framework/tree/dev/bench) 里判定为 *no-go* |
 | 框架自身开销每任务多少钱，以及任务长到多少时它不再占主导 | 框架的**调度语义**值多少钱 —— 见下 |
+| **这些开销花在哪** —— 拆成提交侧 / 手交 / 执行体 / 回程，并**与各对照方案逐段对照** | 该改成什么。报告指出超出落在哪一段、以及为此包装了框架的哪些入口；怎么改是框架侧的决定 |
 
 **调度语义这一维按框架世代分别测量，结论只对它得出的那一代成立。** 在上一代
 （`zoo-framework==0.6.0`）上它读作*不可测*，并逐项给出证据：超时的执行动作是注释掉的、
@@ -166,6 +177,9 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
   列表序列化，故它们不可能互相矛盾。
 - **原始数据是公开的**：本仓库的 `results/<框架版本>/<时间戳>.json`，含**逐轮原始样本**
   （不只是聚合值），所以聚合本身也可以被审计。
+- **开销花在哪**本身就是报告里的一个维度：每任务端到端拆成四段，并与各对照方案**逐段对照**。
+  它只抽样固定的一小批档位与并发度（它是诊断，不是头条证据），并把自己插桩的成本一并发布，
+  让读者可以如实折价。
 - 跨版本：`zoo-bench compare <v1> <v2>`。站点上还会发布 **`matrix.yaml` 里每一对相邻目标的
   对比页**，所以"比上一版变了什么"在网上就能读到，不必只靠命令行。
 
@@ -221,6 +235,9 @@ openspec/changes/archive/   建立本仓库的那个变更：proposal / design D
 
 - 并发度超出机器容量时，开销数字**含排队等待**；报告会点名这些组并**不给它们交叉点**，
   而不是让一个排队数字去左右结论。
+- **并发度超过机器并行能力时，框架开销根本不给。** 那些档位下执行体自报的耗时里含被调度
+  推迟的等待，拿它去减"墙钟 ÷ 并发度"没有意义——实测在 4 核 runner 上并发 64 时相减得
+  −913.8%。端到端、吞吐与执行体自报值照旧留在报告里，被撤下的组会点出来并说明原因。
 - CI 跑在共享的 `ubuntu-latest` 上：相对比较成立，绝对数字逐轮漂移。
 - 每次推送到 `main` 会往本仓库提交约 **7.6 MB** 原始数据（三个目标、每个约 2.6 MB；内容是
   JSON，git 存进历史时约压到四分之一）。

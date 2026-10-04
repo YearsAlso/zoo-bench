@@ -26,6 +26,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .caliber import (
+    UNINTERPRETABLE_REASON,
+    logical_cores_from_environment,
+    overhead_is_interpretable,
+)
+
 ABSOLUTE_NOTE = "绝对耗时不可跨运行比较：仅用于看量级，不要用它读版本差异"
 
 #: 参与对比的相对量。每一项都说明"上升意味着什么"——方向本身不带好坏含义，含义写在度量里。
@@ -149,6 +155,11 @@ def compare_versions(
     after_units = _index(after_run)
     shared = sorted(set(before_units) & set(after_units))
 
+    # 两侧各自的机器并行能力：跨版本对比里两次运行可能不在同一台机器上（那一点由
+    # `environment` 那一节负责报警），故核数必须逐侧取，不能共用。
+    before_cores = logical_cores_from_environment(before_run.get("environment"))
+    after_cores = logical_cores_from_environment(after_run.get("environment"))
+
     overhead: list[dict[str, Any]] = []
     speedups: list[dict[str, Any]] = []
     absolute: list[dict[str, Any]] = []
@@ -157,14 +168,36 @@ def compare_versions(
         adapter, concurrency, tier = key
         old, new = before_units[key], after_units[key]
 
+        readable = overhead_is_interpretable(
+            concurrency=concurrency,
+            logical_cores=before_cores,
+            overhead_seconds=float(old["absolute"]["framework_overhead_seconds"]),
+        ) and overhead_is_interpretable(
+            concurrency=concurrency,
+            logical_cores=after_cores,
+            overhead_seconds=float(new["absolute"]["framework_overhead_seconds"]),
+        )
+        # 任一侧不可读，则"变化"没有意义——它比的是两个不可读的数之差。此时连两侧的原始
+        # 比值都不给：读者会拿它自己去算一个数出来（见 zoo_bench.caliber）。
         overhead.append(
             {
                 "adapter": adapter,
                 "concurrency": concurrency,
                 "body_tier_us": tier,
-                **_change(
-                    old["absolute"]["framework_overhead_ratio"],
-                    new["absolute"]["framework_overhead_ratio"],
+                "interpretable": readable,
+                "note": "" if readable else UNINTERPRETABLE_REASON,
+                **(
+                    _change(
+                        old["absolute"]["framework_overhead_ratio"],
+                        new["absolute"]["framework_overhead_ratio"],
+                    )
+                    if readable
+                    else {
+                        "before": None,
+                        "after": None,
+                        "ratio": None,
+                        "direction": "不可读",
+                    }
                 ),
             }
         )

@@ -94,6 +94,18 @@ def build_blocks(comparison: dict[str, Any]) -> list[Block]:
 
     blocks.append(Block(HEADING, text="框架开销占比的变化"))
     blocks.append(Block(NOTE, text=comparison["metric_semantics"]["overhead_ratio"]))
+    withheld = [row for row in comparison["overhead_ratio"] if not row.get("interpretable", True)]
+    if withheld:
+        # 表里出现"不可读"时必须当场说明：读者跨到别处才知道，等于让他猜
+        blocks.append(
+            Block(
+                NOTE,
+                text="**标为「不可读」的行**："
+                + (withheld[0].get("note") or "")
+                + "。这些组的两侧「变化」都不给——它比的是两个不可读的数之差；"
+                "端到端与吞吐见下面的绝对耗时表与各版本的报告。",
+            )
+        )
     blocks.append(
         Block(
             TABLE,

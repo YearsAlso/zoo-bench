@@ -246,7 +246,14 @@ def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
             _heading("开销阈值交叉点", level=3),
             Block(
                 TABLE,
-                headers=("方案", "并发度", "阈值", "首个不高于阈值的档位（微秒）", "所测档位（微秒）"),
+                headers=(
+                    "方案",
+                    "并发度",
+                    "阈值",
+                    "首个不高于阈值的档位（微秒）",
+                    "所测档位（微秒）",
+                    "说明",
+                ),
                 rows=tuple(
                     (
                         crossing["adapter"],
@@ -256,6 +263,9 @@ def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
                         if crossing["first_tier_at_or_below_threshold_us"] is None
                         else f"{crossing['first_tier_at_or_below_threshold_us']:g}",
                         ", ".join(f"{tier:g}" for tier in crossing["tiers_us"]),
+                        # "—"的**原因**必须当场给出：受排队污染与被撤下开销是两回事，
+                        # 光看一个横杠分不出来
+                        str(crossing.get("note", "")),
                     )
                     for crossing in crossings
                 ),
@@ -327,9 +337,17 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
     ]
 
     overhead = dimensions.get("overhead", {})
+    # 表里出现"—"时必须当场说明它是什么意思：读者跨到口径章节才知道，等于让他猜
+    withheld = [row for row in overhead.get("rows", []) if not row.get("interpretable", True)]
+    overhead_note = str(overhead.get("note", ""))
+    if withheld:
+        overhead_note += (
+            "。**带 — 的行**：该并发度超出这台机器的并行能力，执行体自报耗时含超订的调度等待，"
+            "与该行的每任务端到端不可比，故不给开销数字（端到端与吞吐见各自的维度）"
+        )
     blocks += [
         _heading(f"维度：{overhead.get('title', '框架开销')}"),
-        Block(NOTE, text=str(overhead.get("note", ""))),
+        Block(NOTE, text=overhead_note),
         Block(
             TABLE,
             headers=("方案", "并发度", "执行体档位（微秒）", "框架开销", "开销占比", "执行体实测"),
@@ -366,6 +384,8 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
         ),
     ]
 
+    blocks += _attribution_blocks(dimensions)
+
     semantics = dimensions.get("semantics", {})
     # 结论是在哪一代驱动面上得出的必须随报告给出：这一维的结论与坐标按版本成立，
     # 读者看不到"在哪一代得出"，就无法判断它对自己关心的那一版是否还作数
@@ -399,6 +419,170 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
         )
     if semantics.get("recheck_on_version_bump"):
         blocks.append(Block(NOTE, text=str(semantics["recheck_on_version_bump"])))
+    return blocks
+
+
+def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
+    """开销归因维度：四段、逐段结论、被测框架的细分。"""
+    attribution = dimensions.get("attribution", {})
+    labels: dict[str, str] = attribution.get("segment_labels", {})
+    blocks = [
+        _heading(f"维度：{attribution.get('title', '开销归因')}"),
+        Block(NOTE, text=f"口径：{attribution.get('scope_note', '')}"),
+        Block(PARAGRAPH, text=f"**状态：{attribution.get('status')}**"),
+    ]
+    if attribution.get("reason"):
+        blocks.append(Block(PARAGRAPH, text=str(attribution["reason"])))
+    if attribution.get("note"):
+        blocks.append(Block(NOTE, text=str(attribution["note"])))
+
+    sampled = attribution.get("tiers_us") or []
+    if sampled:
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=f"抽样档位（微秒）：{', '.join(f'{tier:g}' for tier in sampled)}；"
+                f"并发度：{attribution.get('concurrencies')}；"
+                f"该机器并行能力：{attribution.get('cores')}",
+            )
+        )
+
+    groups = attribution.get("groups") or []
+    if groups:
+        blocks.append(
+            Block(
+                TABLE,
+                headers=("方案", "并发度", "档位（微秒）", *(labels.values()), "状态"),
+                rows=tuple(
+                    (
+                        group["adapter"],
+                        str(group["concurrency"]),
+                        f"{float(group['tier_us']):g}",
+                        *(
+                            format_seconds(
+                                (group.get("segments") or {}).get(key)
+                            )
+                            for key in labels
+                        ),
+                        group["status"]
+                        if group["status"] == "ok"
+                        else f"{group['status']}：{group.get('reason', '')}",
+                    )
+                    for group in groups
+                ),
+            )
+        )
+
+    findings = attribution.get("findings") or []
+    if findings:
+        blocks.append(_heading("超出各对照方案的部分落在哪一段", level=3))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=("对照方案", "并发度", "档位（微秒）", "每任务超出", "主要落在", "该段之差"),
+                rows=tuple(
+                    (
+                        row["adapter"],
+                        str(finding["concurrency"]),
+                        f"{finding['tier_us']:g}",
+                        format_seconds(row["excess_seconds"]),
+                        labels.get(row["dominant_segment"], row["dominant_segment"]),
+                        format_seconds(row["segment_excess_seconds"][row["dominant_segment"]]),
+                    )
+                    for finding in findings
+                    for row in finding["per_adapter"]
+                ),
+            )
+        )
+
+    seals = sorted({seal for group in groups for seal in (group.get("seals") or [])})
+    if seals:
+        blocks.append(
+            Block(
+                NOTE,
+                text="用到的插桩接缝（在 harness 侧临时包装，不改框架代码）："
+                + "；".join(seals),
+            )
+        )
+    missing = sorted({name for group in groups for name in (group.get("unavailable_seals") or [])})
+    if missing:
+        # "这一代没有这处入口"与"有、但花了 0 微秒"含义相反，必须分开说
+        blocks.append(
+            Block(
+                NOTE,
+                text="**本次未能量到的接缝**（被测框架的这一代没有对应入口，故相关细分项不在场）："
+                + "；".join(missing),
+            )
+        )
+
+    costs = [
+        (group["adapter"], float(group["tier_us"]), int(group["concurrency"]),
+         group["instrumentation"])
+        for group in groups
+        if group.get("instrumentation")
+    ]
+    if costs:
+        # 插桩自身的成本必须随结论发布：不写出来，读者会把"细分项比对照大"整个读成框架的成本
+        blocks.append(
+            Block(
+                NOTE,
+                text="**插桩自身的成本**（被测框架那一侧，由同一子进程里插桩前后两轮配对得到，"
+                "可如实折价）："
+                + "；".join(
+                    f"{adapter} {tier:g} 微秒 / 并发 {concurrency}："
+                    f"不插桩 {format_seconds(values['baseline_end_to_end_seconds'])} 对插桩后 "
+                    f"{format_seconds(values['baseline_end_to_end_seconds'] + values['delta_seconds'])}，"
+                    f"差 {format_seconds(abs(values['delta_seconds']))}"
+                    + ("（插桩后反而更快：这轮里机器漂移比插桩成本还大）"
+                       if values["delta_seconds"] < 0
+                       else "")
+                    for adapter, tier, concurrency, values in costs
+                ),
+            )
+        )
+
+    overlaps = [
+        (group["adapter"], float(group["tier_us"]), int(group["concurrency"]),
+         group["drill_overlap"])
+        for group in groups
+        if (group.get("drill_overlap") or {}).get("max_overlap_ratio")
+    ]
+    if overlaps:
+        # 细分能不能相加必须当场说清楚：不写出来，读者会把几个独立测量当成一个划分去加
+        blocks.append(
+            Block(
+                NOTE,
+                text="**细分的可加性**：" + str(overlaps[0][3].get("note", ""))
+                + "本轮实测超出量："
+                + "；".join(
+                    f"{adapter} {tier:g} 微秒 / 并发 {concurrency} 超出 "
+                    f"{values['max_overlap_ratio'] * 100:.1f}%"
+                    for adapter, tier, concurrency, values in overlaps
+                ),
+            )
+        )
+
+    drill_labels: dict[str, str] = attribution.get("drill_labels", {})
+    drilled = [finding for finding in findings if finding.get("subject_drill_down")]
+    if drilled and drill_labels:
+        blocks.append(_heading("被测框架的提交侧由什么构成", level=3))
+        blocks.append(
+            Block(
+                BULLETS,
+                items=tuple(
+                    f"并发度 {finding['concurrency']}、档位 {finding['tier_us']:g} 微秒："
+                    + "；".join(
+                        f"{drill_labels.get(key, key)} {format_seconds(value)}"
+                        for key, value in finding["subject_drill_down"].items()
+                    )
+                    for finding in drilled
+                ),
+            )
+        )
+
+    if attribution.get("summary"):
+        blocks.append(_heading("归因结论", level=3))
+        blocks.append(Block(BULLETS, items=tuple(str(line) for line in attribution["summary"])))
     return blocks
 
 

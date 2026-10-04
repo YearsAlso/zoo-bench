@@ -22,11 +22,18 @@ AFTER = "zoo-framework==2.0.0"
 
 
 def _unit(adapter: str, concurrency: int, tier_us: float, overhead: float, median: float) -> dict[str, Any]:
+    """一个测量单元。
+
+    ``framework_overhead_seconds`` 按留档里的真实关系给出（开销 = 占比 × 每任务端到端），
+    而不是随便填一个数：口径判据要看它，填错了会让"可不可读"的判定与真实情况脱节。
+    比例给负值时开销也为负——那正是实测里出现过、必须被撤下的情形。
+    """
     return {
         "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": tier_us},
         "status": "ok",
         "absolute": {
             "framework_overhead_ratio": overhead,
+            "framework_overhead_seconds": median * overhead,
             "end_to_end_per_task_seconds": {"median": median},
         },
     }
@@ -44,6 +51,7 @@ def _run(
     self_check: bool = True,
     version: str = "1.0",
     drive_generation: str | None = "previous",
+    cores: int = 4,
 ) -> dict[str, Any]:
     subject: dict[str, Any] = {"dist_version": version}
     if drive_generation is not None:
@@ -52,7 +60,7 @@ def _run(
         "units": units,
         "relative": {"comparisons": comparisons or [], "note": ""},
         "environment": {
-            "hardware": {"cpu_model": cpu, "logical_cores": 4, "platform": "Linux-x86_64"},
+            "hardware": {"cpu_model": cpu, "logical_cores": cores, "platform": "Linux-x86_64"},
             "python": {"version": "3.13.0"},
             "subject": subject,
         },
@@ -298,3 +306,87 @@ def test_compare_writes_every_artifact(tmp_path: Path) -> None:
     # 首页读的就是这两个字段，故它们必须真的在机器可读的那份里
     assert payload["before"]["self_check_ok"] is True
     assert payload["after"]["self_check_ok"] is True
+
+
+# ------------------------------------------------------------------ 开销数字的适用口径
+
+
+def test_overhead_change_is_withheld_above_the_machines_parallelism() -> None:
+    """并发度超过机器并行能力时，两侧的比值与"变化"都不给。
+
+    只给两侧比值、让读者自己相减，同样会把无效数字放出去——比为负的开销比直接给一个"不可读"
+    更容易被当成真数字。故这一行连 before/after 都为空。
+    """
+    before = _run([_unit("zoo", 64, 300.0, 0.30, 0.0004)])
+    after = _run([_unit("zoo", 64, 300.0, 0.31, 0.0005)], version="2.0")
+
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    row = result["overhead_ratio"][0]
+    assert row["interpretable"] is False
+    assert row["before"] is None and row["after"] is None
+    assert row["ratio"] is None
+    assert row["direction"] == "不可读"
+    assert "并行能力" in row["note"], "要给出原因，读者才知道该跳过这一行"
+
+
+def test_overhead_change_survives_within_the_machines_capacity() -> None:
+    """容量之内照旧给出——判据是"超过"，不是"并发度不小"。"""
+    before = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)])
+    after = _run([_unit("zoo", 4, 300.0, 0.15, 0.0004)], version="2.0")
+
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    row = result["overhead_ratio"][0]
+    assert row["interpretable"] is True
+    assert row["ratio"] == pytest.approx(0.5)
+
+
+def test_a_negative_overhead_is_withheld_even_at_a_high_core_count() -> None:
+    """核数报得再大也拦得住：负开销不可能是合法结果，这条兜底不依赖核数估计。
+
+    两组对照只差开销的符号，核数同为 256：正的可读、负的不可读。少了负的那一组，这条用例
+    只证明"核数大就放行"，而证明不了兜底那条在干活。
+    """
+    positive = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)], cores=256)
+    positive_after = _run([_unit("zoo", 4, 300.0, 0.20, 0.0004)], version="2.0", cores=256)
+    readable = compare.compare_versions(
+        positive, positive_after, before_label="1.0", after_label="2.0"
+    )
+
+    negative = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], cores=256)
+    negative_after = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], version="2.0", cores=256)
+    withheld = compare.compare_versions(
+        negative, negative_after, before_label="1.0", after_label="2.0"
+    )
+
+    assert readable["overhead_ratio"][0]["interpretable"] is True
+    assert withheld["overhead_ratio"][0]["interpretable"] is False
+
+
+def test_either_side_being_unreadable_withholds_the_row() -> None:
+    """只要有一侧不可读，这一行的变化就不可读——它比的是两个数之差。
+
+    两侧的并发度必须相同（否则它们根本不构成同一行，那是"只在一侧出现的单元"那条管的事），
+    故这里让差异只落在**证据**上：旧版是正的、新版是负的。
+    """
+    before = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)], cores=256)
+    after = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], version="2.0", cores=256)
+
+    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+
+    assert result["shared_unit_count"] == 1
+    assert result["overhead_ratio"][0]["interpretable"] is False
+
+
+def test_compare_page_explains_what_an_unreadable_row_means() -> None:
+    """页面里出现"不可读"时必须当场说明：让读者跨到别处才知道，等于让他猜。"""
+    before = _run([_unit("zoo", 64, 300.0, 0.30, 0.0004)])
+    after = _run([_unit("zoo", 64, 300.0, 0.31, 0.0005)], version="2.0")
+
+    text = compare_renderer.render_markdown(
+        compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    )
+
+    assert "不可读" in text
+    assert "并行能力" in text
