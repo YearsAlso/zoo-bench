@@ -28,6 +28,9 @@ dependencies = [
     "zoo-framework",
     "apscheduler>=3.10",
     "pyyaml>=6.0",
+    # 版本号比较要按 PEP 440 归一：框架发布的 0.7.1b0 在索引里叫 0.7.1b0、写进轮子元数据的
+    # 却是 0.7.1-beta，字符串相等会把装对了的环境判成装错
+    "packaging>=23.0",
     # 报告渲染（design D11）：matplotlib 出图，reportlab 排版 PDF
     "matplotlib>=3.8",
     "reportlab>=4.0",

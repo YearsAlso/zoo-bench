@@ -19,6 +19,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 from . import compare, environment, storage
 from . import matrix as matrix_module
 from .render import compare as compare_renderer
@@ -45,16 +47,31 @@ def _specified_version(specifier: str) -> str:
     return specifier.split("==", 1)[-1]
 
 
+def _same_version(left: str | None, right: str | None) -> bool:
+    """两个版本串是否指同一个版本（按 PEP 440 归一后比较）。
+
+    **不能字符串相等**：实测框架发布的 ``0.7.1b0`` 在 PyPI 索引里叫 ``0.7.1b0``，而它写进
+    轮子元数据的是 ``0.7.1-beta``（未经归一）——`importlib.metadata` 报的是后者。直接比字符串会
+    把一个装对了的环境判成装错，是**假阳性拒绝**。
+    """
+    if left is None or right is None:
+        return False
+    try:
+        return Version(left) == Version(right)
+    except InvalidVersion:
+        return left == right
+
+
 def _verify_installed(target: matrix_module.FrameworkTarget) -> str | None:
     """确认当前装着的正是要测的那个目标；返回 None 表示通过。
 
-    PyPI 目标比版本号；**git 目标比 ``direct_url.json`` 里的 URL 与引用**——分支安装的版本号
-    只是仓库里写着的声明值，可能滞后于开发、也可能与已发布版本撞号，**不能拿它当身份**。
+    PyPI 目标比版本号（归一后）；**git 目标比 ``direct_url.json`` 里的 URL 与引用**——分支安装
+    的版本号只是仓库里写着的声明值，可能滞后于开发、也可能与已发布版本撞号，**不能拿它当身份**。
     少了这道校验，就会出现"以为在测 dev 分支、其实装的是某个 release"的静默错配。
     """
     if target.kind == "pypi":
         installed = _installed_framework_version()
-        if installed == target.version:
+        if _same_version(installed, target.version):
             return None
         return (
             f"当前安装的 {target.name} 是 {installed!r}，而矩阵选定的是 {target.specifier!r}。\n"

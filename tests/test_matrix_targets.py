@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -108,6 +107,23 @@ def test_installed_pypi_version_must_match(monkeypatch: pytest.MonkeyPatch) -> N
 def test_installed_pypi_version_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "_installed_framework_version", lambda: "0.7.1b0")
     assert cli._verify_installed(matrix_module.parse_target(PYPI)) is None
+
+
+def test_version_comparison_survives_a_non_normalised_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**真事故的守卫**：框架发布的 0.7.1b0 在 PyPI 索引里叫 ``0.7.1b0``，而它写进轮子元数据的
+    是 ``0.7.1-beta``（未经 PEP 440 归一）——``importlib.metadata`` 报的是后者。
+
+    字符串相等会把一个**装对了的环境**判成装错。校验要按归一后的版本比，否则门禁天天误报，
+    而误报的门禁会被人绕过。
+    """
+    monkeypatch.setattr(cli, "_installed_framework_version", lambda: "0.7.1-beta")
+
+    assert cli._verify_installed(matrix_module.parse_target("zoo-framework==0.7.1b0")) is None
+    assert cli._same_version("0.7.1-beta", "0.7.1b0") is True
+    assert cli._same_version("0.6.0", "0.7.1b0") is False
+    assert cli._same_version(None, "0.7.1b0") is False
 
 
 def test_git_target_requires_a_git_install(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,10 +254,17 @@ def test_archive_paths_stay_distinct_between_a_release_and_a_branch() -> None:
     assert storage.framework_slug(PYPI) != storage.framework_slug(GIT)
 
 
-def test_matrix_yaml_lists_both_a_release_and_the_branch() -> None:
-    """本仓库真实的 matrix.yaml 必须同时有"能装到的版本"与"分支 HEAD"。"""
-    matrix = matrix_module.load(matrix_module.DEFAULT_MATRIX_PATH)
-    kinds = {matrix_module.parse_target(item).kind for item in matrix.frameworks}
+def test_matrix_yaml_entries_are_all_parseable() -> None:
+    """本仓库真实的 matrix.yaml 里每条都必须能被解析。
 
-    assert kinds == {"pypi", "git"}, f"清单应同时覆盖两种来源，实际：{matrix.frameworks}"
-    assert Path(matrix_module.DEFAULT_MATRIX_PATH).is_file()
+    **刻意不要求它"同时含两种来源"**：0.7.x 目前装不上（派发面变了、适配器要适配，见
+    matrix.yaml 里的说明），清单因此只有 PyPI 条目。能力由解析与校验的用例覆盖，清单内容
+    由本用例保证"没有一条是坏掉的"。
+    """
+    matrix = matrix_module.load(matrix_module.DEFAULT_MATRIX_PATH)
+
+    assert matrix.frameworks, "清单不能为空"
+    for item in matrix.frameworks:
+        target = matrix_module.parse_target(item)
+        assert target.name
+        assert storage.framework_slug(item), f"{item} 无法生成目录名"
