@@ -205,7 +205,10 @@ def _relative_turnings(result: dict[str, Any], subject: str | None) -> list[dict
 
 
 def _summary(
-    crossings: list[dict[str, Any]], turnings: list[dict[str, Any]], subject: str | None
+    crossings: list[dict[str, Any]],
+    turnings: list[dict[str, Any]],
+    subject: str | None,
+    favorable: dict[str, Any],
 ) -> list[str]:
     """结论摘要的句子。三个后端都直接用这几句，避免各写一遍导致措辞漂移。
 
@@ -242,6 +245,17 @@ def _summary(
             "故本报告不给它的开销交叉点——端到端与吞吐仍然有效，见口径章节。"
         )
 
+    # 正面那一半也要有一句：只讲"对照方案从多大档位起不再更快"是个负向表述，读者得自己反推
+    # 优势。两个方向对称，句子结构与上面那几句一致（数字来自同一份比值，不含评价词）。
+    items = favorable.get("items") or []
+    if items:
+        best = max(items, key=lambda item: float(item["baseline_ratio_vs_subject"]))
+        lines.append(
+            f"并发度 {best['concurrency']}、执行体 {best['body_tier_us']:g} 微秒 下，"
+            f"被测框架比 {best['baseline']} 快 {float(best['baseline_ratio_vs_subject']):.2f}x"
+            "（该并发度所测档位中最快的一档）。"
+        )
+
     for turning in turnings:
         if turning["first_tier_baseline_not_faster_us"] is not None:
             lines.append(
@@ -255,6 +269,41 @@ def _summary(
                 f"**始终快于**被测框架——这类档位正是本报告的公开不利数据。"
             )
     return lines
+
+
+def _favorable(result: dict[str, Any], subject: str | None) -> dict[str, Any]:
+    """被测框架处于优势的档位。
+
+    **与不利数据同源**：两者都取 ``relative.comparisons[].ratios_vs_subject``，只是一个取
+    ``> 1`` 的那一半（被测框架更快）、一个取 ``< 1`` 的那一半。同源意味着**覆盖范围相同**——
+    两边都是全部所测档位，故谁都不能只挑对自己有利的档位来呈现；一份报告正面讲自己的优势之所
+    以可信，靠的正是这一点。
+    """
+    items: list[dict[str, Any]] = []
+    if subject is not None:
+        for comparison in result.get("relative", {}).get("comparisons", []):
+            for baseline, ratio in sorted(comparison.get("ratios_vs_subject", {}).items()):
+                if float(ratio) > 1.0:
+                    items.append(
+                        {
+                            "baseline": baseline,
+                            "concurrency": comparison["concurrency"],
+                            "body_tier_us": comparison["body_tier_us"],
+                            "subject_median_seconds": comparison["subject_median_seconds"],
+                            "baseline_ratio_vs_subject": ratio,
+                            "margin": f"被测框架比 {baseline} 快 {float(ratio):.2f}x",
+                        }
+                    )
+
+    return {
+        "items": items,
+        "note": (
+            "被测框架处于优势的档位。它与「公开的不利数据」出自**同一份同运行内的相对比**，"
+            "只是一个取更快的档位、一个取更慢的——两者的覆盖面相同，故谁都挑不了档位。"
+            "**本节的缺席不构成不合格**（与不利数据相反）：所测档位处处更慢时它就应当是空的"
+        ),
+        "found": bool(items),
+    }
 
 
 def _unfavorable(result: dict[str, Any], subject: str | None) -> dict[str, Any]:
@@ -546,17 +595,43 @@ def _attribution_findings(groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _attribution_summary(findings: list[dict[str, Any]]) -> list[str]:
-    """结论摘要：超出部分落在哪一段，以及被测框架自己的提交侧由什么构成。"""
+    """结论摘要：超出部分落在哪一段，以及被测框架自己的提交侧由什么构成。
+
+    **整体不慢于对照时不给"落在哪一段"**：逐段差额之和可能为负，而某一段仍为正——那时说
+    "多花 -164 微秒、主要落在手交 +2853 微秒"是自相矛盾的（实测出现过）。两种情况分开表述。
+    """
     lines: list[str] = []
     for finding in findings:
         for row in finding["per_adapter"]:
             dominant = row["dominant_segment"]
+            excess = row["excess_seconds"]
+            if excess <= 0:
+                lines.append(
+                    f"并发度 {finding['concurrency']}、执行体 {finding['tier_us']:g} 微秒 下，"
+                    f"被测框架整体不慢于 {row['adapter']}（每任务 {excess * 1e6:+.0f} 微秒）："
+                    "两边的时序结构不同，逐段差额有正有负，故不给「落在哪一段」。"
+                )
+                continue
             lines.append(
                 f"并发度 {finding['concurrency']}、执行体 {finding['tier_us']:g} 微秒 下，"
-                f"被测框架相对 {row['adapter']} 每任务多花 {row['excess_seconds'] * 1e6:.0f} 微秒，"
+                f"被测框架相对 {row['adapter']} 每任务多花 {excess * 1e6:.0f} 微秒，"
                 f"其中主要落在「{ATTRIBUTION_SEGMENT_LABELS[dominant]}」"
                 f"（{row['segment_excess_seconds'][dominant] * 1e6:+.0f} 微秒）。"
             )
+            opposing = sorted(
+                (
+                    (key, value)
+                    for key, value in row["segment_excess_seconds"].items()
+                    if value < 0
+                ),
+                key=lambda item: item[1],
+            )
+            if opposing:
+                key, value = opposing[0]
+                lines.append(
+                    f"　注意：该组逐段差额并非同号——「{ATTRIBUTION_SEGMENT_LABELS[key]}」"
+                    f"为 {value * 1e6:+.0f} 微秒，读的时候要一并看。"
+                )
         drill = finding["subject_drill_down"]
         if drill:
             parts = "、".join(
@@ -683,6 +758,7 @@ def build_model(
 
     crossings = _overhead_crossings(units, contaminated, logical_cores)
     turnings = _relative_turnings(result, subject)
+    favorable = _favorable(result, subject)
 
     return {
         "schema": MODEL_SCHEMA,
@@ -699,7 +775,7 @@ def build_model(
             "overhead_threshold": OVERHEAD_THRESHOLD,
             "overhead_crossings": crossings,
             "relative_turnings": turnings,
-            "summary": _summary(crossings, turnings, subject),
+            "summary": _summary(crossings, turnings, subject, favorable),
             "note": "单点加速比没有选型含义；结论以“多大的执行体时长下选哪个方案”表述"
             "（同一份框架开销，在 40 微秒 的任务上占七成，在 10 ms 上只占百分之几）",
         },
@@ -712,6 +788,7 @@ def build_model(
             else _unmeasured_semantics(),
             "attribution": _attribution_dimension(result),
         },
+        "favorable": favorable,
         "unfavorable": _unfavorable(result, subject),
         "caveats": _caveats(units, result.get("verification", {}), self_check, logical_cores),
         "absolute": {

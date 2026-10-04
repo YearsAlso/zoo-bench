@@ -558,3 +558,130 @@ def test_a_model_without_the_attribution_key_still_renders() -> None:
 
     assert "维度：开销归因" in text
     assert "抽样档位" not in text, "没有数据时不摆一张空表"
+
+
+def test_overhead_chart_survives_a_withheld_concurrency(tmp_path: Path) -> None:
+    """最大的并发度整组被撤下时，图必须照样出得来。
+
+    **真事故的回归守卫**：撤下"超出机器并行能力"的开销数字之后，4 核 runner 上最大的并发度
+    （64）整组变成 ``None``，而图表仍取它作 y 序列 → 整条退化成 NaN → 对数轴报
+    ``Data cannot be log-scaled because all values are <= 0``，CI 上三个目标全部渲染失败。
+    本地用例当时没抓到它：模型里没有"整组被撤下"这种形态。这条补上那个形态。
+    """
+    model = _model()
+    model["dimensions"]["overhead"]["rows"] = [
+        _overhead_row("zoo", 300.0, 0.42, concurrency=1),
+        {
+            "adapter": "zoo",
+            "concurrency": 64,
+            "body_tier_us": 300.0,
+            "framework_overhead_ratio": None,
+            "framework_overhead_seconds": None,
+            "body_seconds": 3e-4,
+            "interpretable": False,
+            "note": "超出机器并行能力",
+        },
+    ]
+
+    rendered = charts.overhead_ratio_chart(model, tmp_path, threshold=0.15)
+
+    assert "并发度 1" in rendered["scope"], "该图应退回到最大的**可读**并发度"
+    assert "64" in rendered["scope"], "被撤下的并发度要点出来，否则读者以为图覆盖了全部"
+
+
+def test_overhead_chart_is_omitted_when_no_row_is_readable(tmp_path: Path) -> None:
+    """一行可读的都没有时不出这张图——不出空图，也不崩。"""
+    model = _model()
+    model["dimensions"]["overhead"]["rows"] = [
+        {
+            "adapter": "zoo",
+            "concurrency": 64,
+            "body_tier_us": 300.0,
+            "framework_overhead_ratio": None,
+            "framework_overhead_seconds": None,
+            "body_seconds": 3e-4,
+            "interpretable": False,
+            "note": "超出机器并行能力",
+        },
+    ]
+
+    rendered = charts.render_all(model, tmp_path / "figures", threshold=0.15)
+
+    assert all(chart["figure"] != "overhead_ratio" for chart in rendered)
+
+
+def test_advantage_section_mirrors_the_unfavorable_one() -> None:
+    """优势节与不利节**逐列对称、紧邻**，且同处报告主体。
+
+    对称不是为了好看：两节出自同一份同运行内比值，结构一致才能让读者按"赢在哪 / 输在哪"成对地
+    读，也才让"某一节为空"在版面上同样看得见。
+    """
+    model = _model()
+    model["favorable"] = {
+        "items": [
+            {
+                "baseline": "thread_pool",
+                "concurrency": 4,
+                "body_tier_us": 2700.0,
+                "subject_median_seconds": 0.0027,
+                "baseline_ratio_vs_subject": 1.4,
+                "margin": "被测框架比 thread_pool 快 1.40x",
+            }
+        ],
+        "note": "与不利数据同源",
+        "found": True,
+    }
+    model["unfavorable"] = {
+        "items": [
+            {
+                "baseline": "bare_thread",
+                "concurrency": 4,
+                "body_tier_us": 40.0,
+                "subject_median_seconds": 0.0001,
+                "baseline_ratio_vs_subject": 0.6,
+                "gap": "bare_thread 比 zoo 快 1.67x",
+            }
+        ],
+        "note": "不利数据",
+        "found": True,
+    }
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "被测框架在哪些档位更快" in text
+    assert text.index("被测框架在哪些档位更快") < text.index("公开的不利数据"), "优势在前、紧邻不利"
+    assert "被测框架比 thread_pool 快 1.40x" in text
+    # 两节的表头逐列相同（只有方向不同）——故同一个表头会出现两次
+    assert text.count("执行体档位（微秒）") >= 2
+    assert text.count("被测框架中位数") >= 2
+
+
+def test_advantage_section_says_so_when_there_is_nothing_to_show() -> None:
+    """"本节为空"也要看得见——不能因为节里没内容就把整个章节省掉。"""
+    model = _model()
+    model["favorable"] = {"items": [], "note": "同源", "found": False}
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "被测框架在哪些档位更快" in text
+    assert "所测档位内未出现被测框架处于优势的情形" in text
+
+
+def test_render_all_includes_the_relative_multiple_chart(tmp_path: Path) -> None:
+    """相对倍数图要进图表清单——加了函数但没注册，报告里就看不到它。"""
+    model = _model()
+    model["conclusion"]["relative_turnings"] = [
+        {
+            "baseline": "thread_pool",
+            "concurrency": 4,
+            "subject": "zoo",
+            "tiers_us": [300.0, 2700.0],
+            "ratios_vs_subject": [0.8, 1.3],
+            "first_tier_baseline_not_faster_us": 2700.0,
+            "note": "该档位是所测档位中最小的满足者",
+        }
+    ]
+
+    figures = charts.render_all(model, tmp_path / "figures", threshold=0.15)
+
+    assert any(chart["figure"] == "relative_multiple" for chart in figures)

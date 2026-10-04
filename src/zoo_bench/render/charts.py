@@ -73,9 +73,17 @@ def overhead_ratio_chart(
     Returns:
         ``{"figure": 名称, "font": 字体路径, "paths": {格式: 路径}, "scope": 说明}``。
     """
-    rows = model["dimensions"]["overhead"]["rows"]
-    concurrency = _largest(rows, "concurrency")
-    scoped = [row for row in rows if row["concurrency"] == concurrency]
+    readable = [
+        row
+        for row in model["dimensions"]["overhead"]["rows"]
+        # **只取比值可读的那些行**：并发度超出机器并行能力时开销数字被撤下（None），
+        # 拿它们作 y 会让整条序列退化成 NaN，对数轴随即报 "all values are <= 0"
+        # （实测：4 核 runner 上最大的并发度整组被撤下，图直接崩掉渲染）
+        if row.get("framework_overhead_ratio") is not None
+    ]
+    all_rows = model["dimensions"]["overhead"]["rows"]
+    concurrency = _largest(readable, "concurrency")
+    scoped = [row for row in readable if row["concurrency"] == concurrency]
 
     series: dict[str, list[tuple[float, float]]] = {}
     for row in scoped:
@@ -114,11 +122,22 @@ def overhead_ratio_chart(
     axes.legend(fontsize=8)
     figure.tight_layout()
 
+    # 有并发度被撤下时必须说出来：不然读者会以为这张图覆盖了矩阵里的全部并发度
+    withheld = sorted(
+        {row["concurrency"] for row in all_rows}
+        - {row["concurrency"] for row in readable}
+    )
+    scope = f"仅并发度 {concurrency} 的档位；比值仅在同一次运行内成立"
+    if withheld:
+        scope += (
+            f"。并发度 {', '.join(str(value) for value in withheld)} 的开销数字已撤下"
+            "（超出该机器并行能力，见口径章节），故不在图上"
+        )
     return {
         "figure": "overhead_ratio",
         "font": str(font),
         "paths": _render(figure, outdir=outdir, name="overhead_ratio"),
-        "scope": f"仅并发度 {concurrency} 的档位；比值仅在同一次运行内成立",
+        "scope": scope,
     }
 
 
@@ -182,6 +201,108 @@ def throughput_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any
     }
 
 
+def relative_multiple_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any]:
+    """相对各对照方案的倍数 vs 执行体档位 —— **正面那一面的图**。
+
+    纵轴是"对照方案耗时 / 被测框架耗时"：**大于 1 表示被测框架更快**。纵向虚线是打平线（1.0）。
+    横轴取对数（档位跨两个半数量级），纵轴也取对数（倍数本身就是乘性量，线性轴上 0.5x 与 2x
+    距打平线的距离会不一样）。
+
+    **每个所测并发度各一个面板**：挑一个并发度作图就是挑对自己有利的呈现，而这恰恰是这类图最
+    容易失守的地方——分面让全部并发度同时在场，读者自己看形状。
+
+    Args:
+        model: 报告模型。
+        outdir: 图输出目录。
+
+    Returns:
+        同 :func:`overhead_ratio_chart` 的返回结构。
+    """
+    turnings = [
+        turning
+        for turning in model["conclusion"].get("relative_turnings", [])
+        if any(float(ratio) > 0 for ratio in turning["ratios_vs_subject"])
+    ]
+    concurrencies = sorted({turning["concurrency"] for turning in turnings})
+
+    title = "相对各对照方案的倍数（大于 1 即被测框架更快）"
+    xlabel = "执行体时长（微秒，对数轴）"
+    ylabel = "对照方案耗时 / 被测框架耗时"
+    tie_label = "打平线 1.0"
+
+    font = find_cjk_font_covering("".join((title, xlabel, ylabel, tie_label)))
+    apply_to_matplotlib(font)
+
+    columns = min(2, len(concurrencies))
+    rows = -(-len(concurrencies) // columns)
+    figure, axes_grid = plt.subplots(rows, columns, figsize=(8.0, 3.2 * rows), squeeze=False)
+    panels = [axes_grid[index // columns][index % columns] for index in range(rows * columns)]
+
+    for panel, concurrency in zip(panels, concurrencies, strict=False):
+        series: dict[str, list[tuple[float, float]]] = {}
+        for turning in turnings:
+            if turning["concurrency"] != concurrency:
+                continue
+            points = [
+                (tier, ratio)
+                for tier, ratio in zip(
+                    turning["tiers_us"], turning["ratios_vs_subject"], strict=True
+                )
+                if float(ratio) > 0
+            ]
+            series.setdefault(turning["baseline"], []).extend(points)
+
+        low, high = 1.0, 1.0
+        for label, points in sorted(series.items()):
+            points.sort()
+            low = min(low, *(point[1] for point in points))
+            high = max(high, *(point[1] for point in points))
+            panel.plot(
+                [point[0] for point in points],
+                [point[1] for point in points],
+                marker="o",
+                linewidth=1.6,
+                markersize=4,
+                label=label,
+            )
+
+        panel.axhline(1.0, linestyle="--", linewidth=1.0, color="grey")
+        panel.set_xscale("log")
+        panel.set_yscale("log")
+        # 对数刻度的标签里指数带 U+2212 减号，而中文字体没有这个字形——matplotlib 会把它换成
+        # 一个方块（与报告正文被导出前门禁拦下的那次是同一个坑）。故显式给刻度并强制普通格式，
+        # 让标签全是 ASCII：几何仍是对数的，文字安全。
+        ticks = [value for value in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0) if low * 0.9 <= value <= high * 1.1]
+        if len(ticks) >= 2:
+            panel.set_yticks(ticks)
+            panel.get_yaxis().set_major_formatter(plt.ScalarFormatter())
+        panel.set_title(f"并发度 {concurrency}")
+        panel.set_xlabel(xlabel)
+        panel.grid(True, linestyle=":", alpha=0.5)
+        panel.legend(fontsize=7)
+
+    for unused in panels[len(concurrencies) :]:
+        unused.set_visible(False)
+
+    panels[0].set_ylabel(ylabel)
+    if concurrencies:
+        panels[0].text(
+            0.0, 1.02, tie_label, fontsize=7, color="grey", transform=panels[0].transAxes
+        )
+    figure.suptitle(title)
+    figure.tight_layout()
+
+    return {
+        "figure": "relative_multiple",
+        "font": str(font),
+        "paths": _render(figure, outdir=outdir, name="relative_multiple"),
+        "scope": (
+            f"每个所测并发度各一个面板（共 {len(concurrencies)} 个）；"
+            "倍数仅在同一次运行内成立"
+        ),
+    }
+
+
 def render_all(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> list[dict[str, Any]]:
     """出全部图表。
 
@@ -194,9 +315,15 @@ def render_all(model: dict[str, Any], outdir: str | Path, *, threshold: float) -
         各图的描述列表，供渲染层写进报告。
     """
     charts: list[dict[str, Any]] = []
-    rows = model["dimensions"]["overhead"]["rows"]
-    if rows:
+    # 一张已撤下的开销数字做不出可读的图：那种情况下**不出这张图**，而不是出一张空图
+    if any(
+        row.get("framework_overhead_ratio") is not None
+        for row in model["dimensions"]["overhead"]["rows"]
+    ):
         charts.append(overhead_ratio_chart(model, outdir, threshold=threshold))
     if model["dimensions"]["throughput"]["rows"]:
         charts.append(throughput_chart(model, outdir))
+    # 有可比对象才有这张图：没有逐档倍数时画不出"谁更快"
+    if model["conclusion"].get("relative_turnings"):
+        charts.append(relative_multiple_chart(model, outdir))
     return charts

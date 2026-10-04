@@ -586,6 +586,43 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
     return blocks
 
 
+def _favorable_blocks(model: dict[str, Any]) -> list[Block]:
+    """被测框架处于优势的档位。
+
+    **结构与「公开的不利数据」刻意逐列对称**（只有方向不同）：两节出自同一份同运行内比值，
+    读者按「赢在哪 / 输在哪」的顺序读，任一方都不是脚注——这也让"本节缺席"与"本节为空"在
+    版面上同样看得见。
+    """
+    favorable = model.get("favorable", {})
+    blocks = [
+        _heading("被测框架在哪些档位更快"),
+        Block(NOTE, text=str(favorable.get("note", ""))),
+    ]
+
+    items = favorable.get("items", [])
+    if not items:
+        blocks.append(Block(PARAGRAPH, text="所测档位内未出现被测框架处于优势的情形。"))
+        return blocks
+
+    blocks.append(
+        Block(
+            TABLE,
+            headers=("对照方案", "并发度", "执行体档位（微秒）", "差距", "被测框架中位数"),
+            rows=tuple(
+                (
+                    item["baseline"],
+                    str(item["concurrency"]),
+                    f"{item['body_tier_us']:g}",
+                    item["margin"],
+                    format_seconds(item["subject_median_seconds"]),
+                )
+                for item in items
+            ),
+        )
+    )
+    return blocks
+
+
 def _unfavorable_blocks(model: dict[str, Any]) -> list[Block]:
     unfavorable = model.get("unfavorable", {})
     blocks = [
@@ -733,6 +770,8 @@ def build_blocks(
         blocks += builder(model)
     blocks += _chart_blocks(charts, figures_rel)
     blocks += _dimension_blocks(model)
+    # 优势与不利紧邻、结构对称：两者出自同一份同运行内比值，读者按"赢在哪 / 输在哪"读
+    blocks += _favorable_blocks(model)
     blocks += _unfavorable_blocks(model)
     blocks += _caveat_blocks(model)
     blocks += _extension_blocks()

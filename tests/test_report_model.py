@@ -759,3 +759,135 @@ def test_attribution_is_marked_unprobed_when_the_probe_never_ran() -> None:
     assert dimension["status"] == "not_probed"
     assert dimension["reason"]
     assert dimension["segment_labels"], "标签即使在未探查时也要在场"
+
+
+def test_attribution_does_not_claim_a_dominant_segment_when_the_framework_is_not_slower() -> None:
+    """整体不慢于对照时**不给「落在哪一段」**——那时逐段差额有正有负，说"主要落在某段"是自相矛盾。
+
+    实测出现过：整体 −164 微秒、而「手交」+2853 微秒（另一边的手交是负的，它的提交调用把建线程
+    算了进去）。原句读起来像"多花 -164、主要落在 +2853"。
+    """
+    result = _result([])
+    # 对照方案的回程远大于被测框架 → 整体差额为负（实测里 bare_thread 的"手交为负"是另一种形态）
+    result["attribution"] = _attribution_result(
+        [
+            _group("zoo", tier="under_test", submit_side=10e-6),
+            _group("bare_thread", submit_side=10e-6, back=500e-6),
+        ]
+    )
+
+    summary = build_model(result)["dimensions"]["attribution"]["summary"]
+
+    text = " ".join(summary)
+    assert "整体不慢于" in text
+    assert "落在哪一段" in text
+    assert "多花" not in text, "整体不慢时不能说「多花」"
+
+
+def test_attribution_flags_a_negative_segment_even_when_the_total_is_positive() -> None:
+    """整体多花时若某一段是负的，也要一起说出来——只报最大的一段会让读者以为差额同号。"""
+    result = _result([])
+    # 提交侧是最大的正差额（+60），同时手交是负的（−5）：整体仍为正，但差额不同号
+    result["attribution"] = _attribution_result(
+        [
+            _group("zoo", tier="under_test", submit_side=70e-6),
+            _group("bare_thread", submit_side=10e-6, handoff=25e-6),
+        ]
+    )
+
+    summary = build_model(result)["dimensions"]["attribution"]["summary"]
+
+    text = " ".join(summary)
+    assert "多花" in text and "提交侧" in text
+    assert "并非同号" in text, "有负的差额时必须提醒"
+    assert "手交" in text
+
+
+# ------------------------------------------------------------------ 优势数据（与不利数据对称）
+
+
+def _pair_with(ratios: dict[str, float], *, concurrency: int = 4, tier_us: float = 300.0) -> dict[str, Any]:
+    """一份带逐档相对比的运行结果。``ratios`` 是"对照方案耗时 / 被测框架耗时"。"""
+    units = [
+        _subject_unit(tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency),
+    ]
+    units.extend(
+        _unit(adapter, tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency)
+        for adapter in ratios
+    )
+    return _result(units, [_comparison(tier_us, 0.0004, ratios)])
+
+
+def test_favorable_and_unfavorable_are_complementary_halves_of_the_same_source() -> None:
+    """优势与不利是**同一份同运行内比值**的两半：一边一个方向，覆盖面相同。
+
+    这条是"能正面讲优势"的前提：同源意味着谁都挑不了档位——不存在的档位不会因为好看而被补上。
+    """
+    result = _pair_with({"thread_pool": 1.5, "bare_thread": 0.7})
+
+    model = build_model(result)
+
+    favorable = {(item["baseline"], item["body_tier_us"]) for item in model["favorable"]["items"]}
+    unfavorable = {
+        (item["baseline"], item["body_tier_us"]) for item in model["unfavorable"]["items"]
+    }
+    assert favorable == {("thread_pool", 300.0)}
+    assert unfavorable == {("bare_thread", 300.0)}
+    assert favorable.isdisjoint(unfavorable)
+    assert favorable | unfavorable == {("thread_pool", 300.0), ("bare_thread", 300.0)}
+
+
+def test_favorable_section_may_be_empty_without_voiding_the_report() -> None:
+    """优势为空**不构成不合格**（与不利数据相反）：所测档位处处更慢时它就应当是空的。"""
+    result = _pair_with({"thread_pool": 0.6})
+
+    model = build_model(result)
+
+    assert model["favorable"]["found"] is False
+    assert model["favorable"]["items"] == []
+    assert model["unfavorable"]["found"] is True, "这一份里不利数据仍在场"
+
+
+def test_summary_carries_a_positive_sentence_from_the_same_ratios() -> None:
+    """摘要要有正面那一句——只讲"对照方案从多大档位起不再更快"是个负向表述，读者得自己反推。"""
+    result = _pair_with({"thread_pool": 1.5, "bare_thread": 0.7})
+
+    summary = " ".join(build_model(result)["conclusion"]["summary"])
+
+    assert "被测框架比 thread_pool 快 1.50x" in summary
+    assert "显著" not in summary and "大幅" not in summary, "不给评价词，只给同源数字"
+
+
+def test_advantage_chart_covers_every_sampled_concurrency(tmp_path: Path) -> None:
+    """倍数图**按每一个所测并发度分面**：挑一个并发度作图就是挑对自己有利的呈现。"""
+    from zoo_bench.render import charts
+
+    units = [
+        _subject_unit(tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=1),
+        _unit("thread_pool", tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=1),
+        _subject_unit(tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=4),
+        _unit("thread_pool", tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=4),
+    ]
+    # 两个并发度各一条（`_comparison` 的并发度是写死的 4，故这里直接构造）
+    comparisons = [
+        {
+            "concurrency": 1,
+            "body_tier_us": 300.0,
+            "subject_median_seconds": 0.0004,
+            "ratios_vs_subject": {"thread_pool": 1.2},
+        },
+        {
+            "concurrency": 4,
+            "body_tier_us": 300.0,
+            "subject_median_seconds": 0.0004,
+            "ratios_vs_subject": {"thread_pool": 0.8},
+        },
+    ]
+    model = build_model(_result(units, comparisons), environment={"hardware": {"logical_cores": 8}})
+
+    chart = charts.relative_multiple_chart(model, tmp_path)
+
+    assert chart["figure"] == "relative_multiple"
+    assert "2 个" in chart["scope"], "面板数要写明，读者才知道覆盖了几个并发度"
+    for suffix in ("svg", "png"):
+        assert Path(chart["paths"][suffix]).is_file()
