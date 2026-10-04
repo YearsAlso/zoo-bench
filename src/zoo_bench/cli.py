@@ -22,7 +22,9 @@ from typing import Any
 from . import compare, environment, storage
 from . import matrix as matrix_module
 from .render import compare as compare_renderer
+from .render import index as site_index
 from .render import report as report_renderer
+from .render.assets import write_style
 from .report import OVERHEAD_THRESHOLD, build_model
 from .runner import (
     DEFAULT_MEASURED_ROUNDS,
@@ -249,6 +251,7 @@ def compare_command(args: argparse.Namespace) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    write_style(out)
     (out / "compare.md").write_text(compare_renderer.render_markdown(comparison), encoding="utf-8")
     (out / "index.html").write_text(compare_renderer.render_html(comparison), encoding="utf-8")
     print(f"对比：{out / 'index.html'}")
@@ -259,55 +262,13 @@ def compare_command(args: argparse.Namespace) -> int:
 
 
 def index_command(args: argparse.Namespace) -> int:
-    """写站点首页：列出已出报告的版本并链过去。
+    """写站点首页：每个已留档版本一张卡片。
 
-    **放在代码里而不是 YAML 里**——把"首页长什么样"写在 workflow 里就没法被用例盖到，而它是
-    读者进入报告的唯一入口。
+    **实现放在 `render/index.py` 而不是这里**——首页长什么样、卡片上放哪些事实，都该被用例盖到；
+    CLI 只负责把留档目录与站点目录传进去。
     """
-    site = Path(args.site)
-    site.mkdir(parents=True, exist_ok=True)
-
-    entries = [
-        (slug, f"{slug}/index.html", f"{slug}/report.pdf")
-        for slug in storage.available_frameworks(root=args.results)
-        if (site / slug / "index.html").is_file()
-    ]
-
-    if entries:
-        items = "\n".join(
-            f'<li><a href="{report}">{slug}</a>'
-            + (f' · <a href="{pdf}">PDF</a>' if (site / pdf).is_file() else "")
-            + "</li>"
-            for slug, report, pdf in entries
-        )
-        body = f"<ul>{items}</ul>"
-    else:
-        body = "<p>还没有任何已渲染的报告。</p>"
-
-    (site / "index.html").write_text(
-        "\n".join(
-            [
-                "<!doctype html>",
-                '<html lang="zh-CN">',
-                "<head>",
-                '<meta charset="utf-8">',
-                '<meta name="viewport" content="width=device-width, initial-scale=1">',
-                "<title>zoo-bench 性能报告</title>",
-                "<style>body{font-family:-apple-system,'Segoe UI','Noto Sans CJK SC',sans-serif;"
-                "max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.7}"
-                "</style>",
-                "</head>",
-                "<body>",
-                "<h1>zoo-bench 性能报告</h1>",
-                body,
-                "</body>",
-                "</html>",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    print(f"首页：{site / 'index.html'}")
+    path = site_index.render(args.results, args.site)
+    print(f"首页：{path}")
     return 0
 
 

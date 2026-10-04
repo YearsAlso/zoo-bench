@@ -6,6 +6,9 @@ Pages 发布的是静态站点——Markdown 直接放上去会被当纯文本�
 行内标记刻意只支持报告实际用到的那一点子集（``**粗体**`` 与 ``代码``），**不引 Markdown 库**：
 为了一小撮语法多一个依赖与一层行为不确定性不划算，而"到底支持哪些语法"写在这里比藏在库的
 版本差异里清楚。
+
+**这里额外做两件 Markdown/PDF 不需要的事**：给标题加锚点 `id`、并由二级标题生成目录。它们是
+网页特有的可导航性——README 的样式与结构分工里写过：观感归 ``style.css``，**结构归这里**。
 """
 
 from __future__ import annotations
@@ -14,28 +17,15 @@ import html as html_module
 import re
 from typing import Any
 
+from .assets import STYLE_FILENAME
 from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block, build_blocks
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
+_SLUG_UNSAFE = re.compile(r"[^\w一-鿿　-〿]+")
 
-_STYLE = """
-:root { color-scheme: light dark; }
-body {
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  max-width: 62rem; margin: 0 auto; padding: 2rem 1rem; line-height: 1.65;
-}
-h1 { border-bottom: 2px solid rgba(128,128,128,0.35); padding-bottom: 0.4rem; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92rem; }
-th, td { border: 1px solid rgba(128,128,128,0.4); padding: 0.35rem 0.6rem; text-align: left; }
-th { background: rgba(128,128,128,0.12); }
-blockquote {
-  margin: 1rem 0; padding: 0.4rem 1rem;
-  border-left: 3px solid rgba(128,128,128,0.5); color: rgba(140,140,140,1);
-}
-img { max-width: 100%; height: auto; }
-code { background: rgba(128,128,128,0.15); padding: 0.1rem 0.3rem; border-radius: 3px; }
-"""
+TOC_TITLE = "本页内容"
+TOC_LEVEL = 2
 
 
 def inline(text: str) -> str:
@@ -46,6 +36,22 @@ def inline(text: str) -> str:
     escaped = html_module.escape(text)
     escaped = _BOLD.sub(r"<strong>\1</strong>", escaped)
     return _CODE.sub(r"<code>\1</code>", escaped)
+
+
+def slug(text: str, *, taken: set[str]) -> str:
+    """由标题文本生成锚点 id。
+
+    保留汉字（中文标题的锚点理应可读），其余不可用字符折成 ``-``；重名时补数字后缀，
+    因为报告里"维度：…"这类标题的前缀相同，仅靠文本可能撞车。
+    """
+    base = _SLUG_UNSAFE.sub("-", text).strip("-").lower() or "section"
+    candidate = base
+    index = 2
+    while candidate in taken:
+        candidate = f"{base}-{index}"
+        index += 1
+    taken.add(candidate)
+    return candidate
 
 
 def _table_html(block: Block) -> str:
@@ -62,21 +68,44 @@ def _image_html(block: Block) -> str:
     return f'<img src="{source}" alt="{alt}">'
 
 
-def blocks_to_html(blocks: list[Block], *, title: str = "zoo-bench 性能报告") -> str:
+def _toc_html(entries: list[tuple[str, str]]) -> str:
+    if not entries:
+        return ""
+    items = "".join(f'<li><a href="#{anchor}">{inline(text)}</a></li>' for text, anchor in entries)
+    return f'<nav class="toc"><p>{TOC_TITLE}</p><ol>{items}</ol></nav>'
+
+
+def blocks_to_html(
+    blocks: list[Block], *, title: str = "zoo-bench 性能报告", stylesheet: str = STYLE_FILENAME
+) -> str:
     """把块列表序列化成一份完整的 HTML 文档。
 
     Args:
         blocks: :func:`zoo_bench.render.blocks.build_blocks` 的返回值。
         title: 文档标题。
+        stylesheet: 样式表的相对路径；文档用 ``<link>`` 引用它。
 
     Returns:
         完整的 HTML 文本。
     """
+    taken: set[str] = set()
+    anchors = {
+        index: slug(block.text, taken=taken) for index, block in enumerate(blocks) if block.kind == HEADING
+    }
+    toc = [
+        (block.text, anchors[index])
+        for index, block in enumerate(blocks)
+        if block.kind == HEADING and block.level == TOC_LEVEL
+    ]
+
     body: list[str] = []
-    for block in blocks:
+    for index, block in enumerate(blocks):
         if block.kind == HEADING:
             level = min(block.level, 6)
-            body.append(f"<h{level}>{inline(block.text)}</h{level}>")
+            body.append(f'<h{level} id="{anchors[index]}">{inline(block.text)}</h{level}>')
+            # 目录插在文档首个标题之后——放在最前面会与标题抢位置，放在末尾则没人看得到
+            if block.level == 1:
+                body.append(_toc_html(toc))
         elif block.kind == PARAGRAPH:
             body.append(f"<p>{inline(block.text)}</p>")
         elif block.kind == BULLETS:
@@ -97,7 +126,7 @@ def blocks_to_html(blocks: list[Block], *, title: str = "zoo-bench 性能报告"
             '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             f"<title>{inline(title)}</title>",
-            f"<style>{_STYLE}</style>",
+            f'<link rel="stylesheet" href="{html_module.escape(stylesheet, quote=True)}">',
             "</head>",
             "<body>",
             *body,

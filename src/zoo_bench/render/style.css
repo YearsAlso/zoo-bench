@@ -1,0 +1,400 @@
+/* zoo-bench 站点样式。
+ *
+ * 只管**观感**：配色、字号、留白、表格可读性、卡片与打印。内容与结构不在这里——它们在
+ * `blocks.py`（说什么）与 `html.py`（HTML 骨架）里。这条分工写在这里，是因为"改样式顺手把
+ * 结构也改了"是这类文件最常见的腐化方式。
+ *
+ * 站点的两类页面共用这一份：报告/对比页（长文 + 多张表）与首页（版本卡片）。
+ */
+
+/* ---------------------------------------------------------------- 主题变量 */
+
+:root {
+  color-scheme: light dark;
+
+  --fg: #1f2328;
+  --fg-muted: #656d76;
+  --bg: #ffffff;
+  --bg-subtle: #f6f8fa;
+  --border: #d8dee4;
+  --border-strong: #afb8c1;
+  --accent: #0969da;
+  --shadow: 0 1px 3px rgba(27, 31, 36, 0.12);
+
+  /* 中文正文的行高要比英文松一些，否则密不透气 */
+  --leading: 1.75;
+  --measure: 68rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6edf3;
+    --fg-muted: #9198a1;
+    --bg: #0d1117;
+    --bg-subtle: #161b22;
+    --border: #30363d;
+    --border-strong: #484f58;
+    --accent: #4493f8;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* ---------------------------------------------------------------- 基础排版 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  /* CJK 字体要显式列：默认字体栈里的拉丁字体没有汉字字形，会逐字回退到系统兜底 */
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC",
+    "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  font-size: 16px;
+  line-height: var(--leading);
+  color: var(--fg);
+  background: var(--bg);
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 6rem;
+  -webkit-text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.35;
+  margin: 2.2em 0 0.6em;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 1.85rem;
+  margin-top: 0;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--border);
+}
+
+/* 章节之间给一条分隔线：报告有八个章节，光靠留白分不清层级 */
+h2 {
+  font-size: 1.35rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+h3 {
+  font-size: 1.1rem;
+  color: var(--fg-muted);
+}
+
+/* 锚点跳转后标题不要被粘性表头顶住 */
+h1,
+h2,
+h3,
+h4,
+[id] {
+  scroll-margin-top: 1rem;
+}
+
+p {
+  margin: 0.85em 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+
+pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+ul,
+ol {
+  padding-left: 1.5em;
+}
+
+li {
+  margin: 0.35em 0;
+}
+
+/* ---------------------------------------------------------------- 表格 */
+
+/* 96 行的对照表是这份报告的主体，读得动靠这三件事：粘性表头、斑马纹、紧凑留白 */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.1rem 0 1.6rem;
+  font-size: 0.9rem;
+  /* 表很宽时允许横向滚动，而不是把页面撑破 */
+  display: block;
+  overflow-x: auto;
+}
+
+thead {
+  display: table-header-group;
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-subtle);
+  font-weight: 600;
+  /* border-collapse 下粘性单元格的边框会被裁掉，用阴影补回底边 */
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+}
+
+tbody tr:nth-child(even) {
+  background: var(--bg-subtle);
+}
+
+tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* ---------------------------------------------------------------- 引用块（口径说明） */
+
+blockquote {
+  margin: 1rem 0;
+  padding: 0.5rem 1rem;
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  font-size: 0.95rem;
+}
+
+blockquote p {
+  margin: 0.2em 0;
+}
+
+/* ---------------------------------------------------------------- 图表 */
+
+img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.2rem auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+/* ---------------------------------------------------------------- 目录 */
+
+/* 由 html.py 从标题块生成，只出现在长报告页 */
+nav.toc {
+  margin: 1.5rem 0 2.5rem;
+  padding: 0.9rem 1.1rem;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+nav.toc > p {
+  margin: 0 0 0.5rem;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+nav.toc ol {
+  margin: 0;
+  padding-left: 1.2em;
+  columns: 2;
+  column-gap: 2rem;
+}
+
+nav.toc li {
+  margin: 0.2em 0;
+  break-inside: avoid;
+}
+
+@media (max-width: 40rem) {
+  nav.toc ol {
+    columns: 1;
+  }
+}
+
+/* ---------------------------------------------------------------- 首页（版本卡片） */
+
+.site-header {
+  margin-bottom: 2rem;
+}
+
+.site-header h1 {
+  font-size: 1.7rem;
+}
+
+.site-header p {
+  color: var(--fg-muted);
+  margin: 0.4rem 0 0;
+}
+
+.version-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.version-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+  transition: border-color 0.15s ease;
+}
+
+.version-card:hover {
+  border-color: var(--accent);
+}
+
+.version-card h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  border: 0;
+}
+
+/* 事实按"标签 | 值"两列排，一条一行：inline 排法会让"失败单元 4"这类短语从中间折断 */
+.version-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.6rem;
+  margin: 0 0 0.8rem;
+  font-size: 0.88rem;
+  color: var(--fg-muted);
+}
+
+.version-card dt {
+  margin: 0;
+}
+
+.version-card dd {
+  margin: 0;
+}
+
+.version-card .actions a {
+  display: inline-block;
+  margin-right: 0.6rem;
+  font-size: 0.92rem;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.78rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+
+.badge.ok {
+  color: var(--accent);
+  border-color: currentColor;
+}
+
+.empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------- 打印 */
+
+/* 让浏览器「打印为 PDF」也拿得出手——它与 reportlab 导的那份互补：
+   前者是网页观感，后者是排版精修 */
+@media print {
+  :root {
+    --fg: #000000;
+    --fg-muted: #444444;
+    --bg: #ffffff;
+    --bg-subtle: #f2f2f2;
+  }
+
+  body {
+    max-width: none;
+    padding: 0;
+    font-size: 10.5pt;
+  }
+
+  /* 目录在纸上无用（没有可点的链接），且占一页 */
+  nav.toc {
+    display: none;
+  }
+
+  /* 标题不要孤立在页尾 */
+  h1,
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+
+  table,
+  blockquote,
+  img {
+    break-inside: avoid;
+  }
+
+  /* 表头跨页重复 */
+  thead {
+    display: table-header-group;
+  }
+
+  tr {
+    break-inside: avoid;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  /* 打印时把链接目标写出来，否则纸上看不出链到哪 */
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.8em;
+    color: var(--fg-muted);
+    word-break: break-all;
+  }
+
+  .version-card {
+    box-shadow: none;
+    border: 1px solid var(--border);
+    break-inside: avoid;
+  }
+}

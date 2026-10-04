@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .assets import write_style
 from .blocks import build_blocks
 from .charts import render_all
 from .html import blocks_to_html
@@ -34,6 +35,9 @@ def render(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> di
     directory = Path(outdir)
     directory.mkdir(parents=True, exist_ok=True)
     figures = directory / "figures"
+
+    # 样式表与页面同目录：页面用相对路径 `<link>` 引用它，故每个输出目录各带一份
+    write_style(directory)
 
     charts = render_all(model, figures, threshold=threshold)
     blocks = build_blocks(model, charts)
