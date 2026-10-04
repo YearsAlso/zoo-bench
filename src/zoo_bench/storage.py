@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .targets import MatrixError, parse_target
+
 DEFAULT_RESULTS_DIRNAME = "results"
 
 #: UTC 时间戳格式。用 UTC 而非本地时间，避免同一份留档在不同时区的机器上排序错乱。
@@ -40,8 +42,30 @@ def results_root(base: str | Path | None = None) -> Path:
 
 
 def framework_slug(framework: str) -> str:
-    """把框架规格转成可作目录名的 slug：``zoo-framework==0.6.0`` → ``zoo-framework-0.6.0``。"""
-    return _SLUG_UNSAFE.sub("-", framework).strip("-")
+    """把框架规格转成可作目录名的 slug。
+
+    两种规格都要处理：
+
+    - ``zoo-framework==0.7.1b0`` -> ``zoo-framework-0.7.1b0``
+    - ``zoo-framework @ git+https://github.com/o/r.git@dev`` -> ``zoo-framework-dev``
+
+    git 引用只取**分支/标签名**而不是整条 URL：URL 进目录名既长又难读，而"哪个分支"已经足够
+    定位，**具体 commit 由报告的环境自述记录**（``direct_url.json`` 里带）。
+
+    **解析走 :func:`zoo_bench.targets.parse_target`，不在这里重写一遍**——两处各解析一次必然
+    漂移，实测就出现过同一个 spec 在文件名里是 ``zoo-framework-dev``、在这条 slug 里变成整条 URL。
+
+    **解析失败不抛异常**：这条函数同时在**查档**路径上被调用，而查档允许传纯版本号（``0.7.1b0``）
+    甚至已经算好的 slug（``zoo-framework-dev``）——那些都不是合法的矩阵规格。写档路径上的非法
+    规格由 ``targets.parse_target`` 在更早处拦下，不靠这里兜底。
+    """
+    try:
+        target = parse_target(framework)
+    except MatrixError:
+        return _SLUG_UNSAFE.sub("-", framework.strip()).strip("-")
+
+    suffix = target.version if target.kind == "pypi" else target.ref
+    return _SLUG_UNSAFE.sub("-", f"{target.name}-{suffix}").strip("-")
 
 
 def save_run(

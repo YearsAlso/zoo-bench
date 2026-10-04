@@ -11,6 +11,7 @@ spec 要求报告自述"足以让第三方判断数字适用范围"的环境：�
 from __future__ import annotations
 
 import importlib.metadata as metadata
+import json
 import os
 import platform
 import shutil
@@ -164,6 +165,26 @@ def collect(command: list[str] | None = None) -> dict[str, Any]:
     }
 
 
+def install_source(distribution: str = "zoo-framework") -> dict[str, Any] | None:
+    """被测框架的安装来源（``dist-info/direct_url.json``）。
+
+    **git 安装时这是识别"到底测的是哪个 commit"的唯一凭据**：发行元数据的版本号对分支安装只是
+    仓库里写着的声明值（可能滞后于开发、也可能与已发布版本撞号），而 `direct_url.json` 里带着
+    真实 commit。报告要能回答"这份数据出自哪个提交"，靠的就是它。
+    """
+    try:
+        raw = metadata.distribution(distribution).read_text("direct_url.json")
+    except (metadata.PackageNotFoundError, FileNotFoundError, OSError):
+        return None
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _subject_identity() -> dict[str, Any]:
     """被测框架的标识。
 
@@ -175,6 +196,7 @@ def _subject_identity() -> dict[str, Any]:
         "dist_version": _distribution_version("zoo-framework"),
         "module_version": None,
         "module_path": None,
+        "install_source": install_source(),
         "note": "以 dist_version（发行元数据）为版本真源；module_version 仅作附注",
     }
 

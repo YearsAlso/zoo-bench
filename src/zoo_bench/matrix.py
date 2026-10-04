@@ -15,12 +15,21 @@ from typing import Any
 import yaml
 
 from .runner import DEFAULT_MEASURED_ROUNDS, DEFAULT_WARMUP_ROUNDS, UnitSpec
+from .targets import FrameworkTarget, MatrixError, parse_target
 
 DEFAULT_MATRIX_PATH = "matrix.yaml"
 
-
-class MatrixError(RuntimeError):
-    """`matrix.yaml` 缺失或字段不合法。"""
+__all__ = [
+    "DEFAULT_MATRIX_PATH",
+    "FrameworkTarget",
+    "Matrix",
+    "MatrixError",
+    "load",
+    "parse_target",
+    "resolve_adapters",
+    "select_framework",
+    "unit_specs",
+]
 
 
 @dataclass(frozen=True)
@@ -96,11 +105,11 @@ def resolve_adapters(matrix: Matrix) -> tuple[str, ...]:
 def select_framework(matrix: Matrix, specifier: str | None) -> str:
     """选出要测的框架规格。
 
-    允许传完整规格或纯版本号；不传时取清单第一项——**但不是"随便挑一个"**：清单本身就是
-    显式维护的，第一项即维护者指定的基准版本。
+    允许传完整规格、纯版本号或 git 引用；不传时取清单第一项——**但不是"随便挑一个"**：清单本身
+    就是显式维护的，第一项即维护者指定的基准版本。
 
     Raises:
-        MatrixError: 指定的版本不在清单里。
+        MatrixError: 指定的目标不在清单里。
     """
     if specifier is None:
         return matrix.frameworks[0]
@@ -108,7 +117,11 @@ def select_framework(matrix: Matrix, specifier: str | None) -> str:
     if specifier in matrix.frameworks:
         return specifier
 
-    matched = [item for item in matrix.frameworks if item.endswith(f"=={specifier}")]
+    matched = [
+        item
+        for item in matrix.frameworks
+        if item.endswith(f"=={specifier}") or item.endswith(f"@{specifier}")
+    ]
     if len(matched) == 1:
         return matched[0]
 

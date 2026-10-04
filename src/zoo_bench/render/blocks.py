@@ -165,7 +165,7 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
     harness = environment.get("harness", {})
 
     cpu = hardware.get("cpu_model") or f"不可用（{hardware.get('cpu_model_source')}）"
-    rows = (
+    rows: list[tuple[str, str]] = [
         ("CPU 型号", str(cpu)),
         ("逻辑核数", str(hardware.get("logical_cores"))),
         ("平台", str(hardware.get("platform"))),
@@ -178,11 +178,26 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
         ("解释器", str(python.get("executable"))),
         ("被测框架（发行元数据）", str(subject.get("dist_version"))),
         ("被测框架（模块 __version__）", f"{subject.get('module_version')}（仅附注，不作版本判据）"),
+    ]
+
+    # git 安装时把来源与 commit 摆出来：分支安装的版本号只是仓库里写着的声明值，
+    # 真正回答"这份数据出自哪个提交"的是 direct_url.json
+    vcs = (subject.get("install_source") or {}).get("vcs_info") or {}
+    if vcs:
+        rows += [
+            (
+                "安装来源",
+                f"{vcs.get('vcs', 'vcs')} 的 {vcs.get('requested_revision') or '（未记录引用）'}",
+            ),
+            ("提交", str(vcs.get("commit_id"))[:12]),
+        ]
+
+    rows += [
         ("harness", f"zoo-bench {harness.get('version')} @ {harness.get('commit')}"),
         ("复现命令", "`" + " ".join(environment.get("command", [])) + "`"),
-    )
+    ]
 
-    blocks = [_heading("运行环境"), Block(TABLE, headers=("项", "值"), rows=rows)]
+    blocks = [_heading("运行环境"), Block(TABLE, headers=("项", "值"), rows=tuple(rows))]
     if subject.get("note"):
         blocks.append(Block(NOTE, text=str(subject["note"])))
     return blocks

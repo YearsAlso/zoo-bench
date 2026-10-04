@@ -1,16 +1,23 @@
 # zoo-bench 测量矩阵
 #
-# 版本清单**显式维护**（design D8）：不自动跟踪 PyPI 最新版，也不跟踪框架仓库的 dev 分支。
-# 发版后由维护者追加一行；跨版本提升报告需要至少两个版本同时留档。
+# 被测目标清单。两种写法都支持：
+#   `包名==版本`                         —— PyPI 上已发布的版本
+#   `包名 @ git+<仓库地址>@<分支/标签>`   —— 某个 git 引用的 HEAD
 #
-# 版本号必须真实存在于 PyPI，否则安装必然失败。不要照抄框架仓库 pyproject.toml 里的版本号
-# ——实测它与 PyPI 上的发行版对不上。核对当前可用版本：
+# **两者都要**：已发布版本是读者能装到的东西，仓库分支是"还没发但已经改了"的状态；
+# 只测前者会让报告落后于开发，只测后者则报告里没有可安装的对应物。
+#
+# 跨版本对比只要两边的**留档**都在即可（`zoo-bench compare` 读留档，不重新测量），
+# 所以上一版不必留在本清单里——它的数据已经在 results/ 下。
+#
+# 版本号必须真实存在（PyPI）或引用必须真实存在（git），否则安装失败。核对可用版本：
 #   uv pip index versions zoo-framework
-
+# 不要照抄框架仓库 pyproject.toml 里的版本号——实测它与 PyPI 上的发行版对不上。
 frameworks:
-  - "zoo-framework==0.6.0"
-  # 做跨版本对比时追加，例如：
-  # - "zoo-framework==0.5.4b0"
+  # 已发布的预发布版（PyPI 的 info.version 只报最新稳定版，故它显示为 0.6.0）
+  - "zoo-framework==0.7.1b0"
+  # 框架仓库 dev 分支的 HEAD。分支安装的**提交**由报告的环境自述记录（direct_url.json）
+  - "zoo-framework @ git+https://github.com/YearsAlso/zoo-framework.git@dev"
 
 # 并发度档位
 concurrency: [1, 4, 16, 64]

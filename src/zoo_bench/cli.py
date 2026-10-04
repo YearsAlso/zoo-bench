@@ -45,6 +45,44 @@ def _specified_version(specifier: str) -> str:
     return specifier.split("==", 1)[-1]
 
 
+def _verify_installed(target: matrix_module.FrameworkTarget) -> str | None:
+    """确认当前装着的正是要测的那个目标；返回 None 表示通过。
+
+    PyPI 目标比版本号；**git 目标比 ``direct_url.json`` 里的 URL 与引用**——分支安装的版本号
+    只是仓库里写着的声明值，可能滞后于开发、也可能与已发布版本撞号，**不能拿它当身份**。
+    少了这道校验，就会出现"以为在测 dev 分支、其实装的是某个 release"的静默错配。
+    """
+    if target.kind == "pypi":
+        installed = _installed_framework_version()
+        if installed == target.version:
+            return None
+        return (
+            f"当前安装的 {target.name} 是 {installed!r}，而矩阵选定的是 {target.specifier!r}。\n"
+            f"请先安装：pip install '{target.specifier}'"
+        )
+
+    source = environment.install_source() or {}
+    vcs = source.get("vcs_info") or {}
+    if not vcs:
+        return (
+            f"当前安装的 {target.name} 不是 git 安装，而矩阵选定的是 {target.specifier!r}。\n"
+            f"请先安装：pip install '{target.specifier}'"
+        )
+    if vcs.get("requested_revision") != target.ref:
+        return (
+            f"当前安装的 {target.name} 来自 {vcs.get('requested_revision')!r}，"
+            f"而矩阵选定的是 {target.ref!r}。\n请先安装：pip install '{target.specifier}'"
+        )
+
+    url = str(source.get("url", "")).rstrip("/")
+    if target.url and target.url.rstrip("/") not in url:
+        return (
+            f"安装来源与矩阵不符：矩阵是 {target.url}，实际来自 {url}。\n"
+            f"请先安装：pip install '{target.specifier}'"
+        )
+    return None
+
+
 def _split(text: str | None, cast: Any = str) -> tuple[Any, ...] | None:
     if not text:
         return None
@@ -75,14 +113,9 @@ def run_command(args: argparse.Namespace) -> int:
     matrix = matrix_module.load(args.matrix)
     framework = matrix_module.select_framework(matrix, args.framework)
 
-    installed = _installed_framework_version()
-    expected = _specified_version(framework)
-    if installed != expected:
-        print(
-            f"当前安装的 zoo-framework 是 {installed!r}，而矩阵选定的是 {framework!r}。\n"
-            f"请先安装：pip install '{framework}'",
-            file=sys.stderr,
-        )
+    problem = _verify_installed(matrix_module.parse_target(framework))
+    if problem:
+        print(problem, file=sys.stderr)
         return 2
 
     specs = matrix_module.unit_specs(
