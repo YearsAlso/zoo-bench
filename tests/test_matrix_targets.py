@@ -136,6 +136,21 @@ def test_git_target_requires_a_git_install(monkeypatch: pytest.MonkeyPatch) -> N
     assert "不是 git 安装" in problem
 
 
+def test_git_install_failure_advice_is_not_a_no_op(monkeypatch: pytest.MonkeyPatch) -> None:
+    """给出的补救命令必须**真的能解决问题**。
+
+    真事故的守卫：CI 上 `pip install "…@dev"` 退出码 0 却什么都没装（矩阵里两个条目声明了同一个
+    版本号，pip 把这条直接引用当成已满足），而当时的提示是"请先安装：pip install …"——照着做
+    仍然是空操作，人会在原地绕圈。这条用例要求提示里带上"先卸掉"这一步。
+    """
+    monkeypatch.setattr(environment, "install_source", lambda *_: {})
+
+    problem = cli._verify_installed(matrix_module.parse_target(GIT)) or ""
+
+    assert "pip uninstall" in problem, "只给 `pip install` 在版本号撞号时是空操作"
+    assert "不会换装" in problem, "要把这个坑说出来，否则读者不知道为什么照做没用"
+
+
 def test_git_target_requires_the_declared_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     """装的是另一个分支/标签 → 拦下。**版本号帮不上忙**：分支的版本号只是声明值。"""
     monkeypatch.setattr(

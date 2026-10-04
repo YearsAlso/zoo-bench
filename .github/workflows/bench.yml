@@ -64,6 +64,16 @@ jobs:
             [ -n "$framework" ] || continue
             echo "::group::测量 $framework"
 
+            # 换目标前**显式卸掉**上一个。不能指望 `pip install` 换装：矩阵里两个条目声明的
+            # 版本号可能相同（实测 dev 分支的 pyproject 与已发布的 0.7.1b0 都声明 0.7.1b0），
+            # 而 pip 在版本号相同时把直接引用当成"已满足"——实测 `pip install "...@dev"` 退出码
+            # 0、只打传递依赖的 already satisfied、**根本不装目标**。留下的还是上一个目标的
+            # dist-info，于是 `_verify_installed` 如实判否，而那句"请先安装"会把人引到一条
+            # 空操作上（照做仍然什么都不换）。包名从规格里取，与本文件"不出现版本字面量"
+            # 的约定一致。
+            name=$(python -c \
+              "from zoo_bench.targets import parse_target; print(parse_target('''$framework''').name)")
+            python -m pip uninstall -y "$name" || true
             python -m pip install "$framework"
 
             # 输出目录取框架规格的 slug，与 storage.framework_slug 同一套规则

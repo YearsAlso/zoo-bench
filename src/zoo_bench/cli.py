@@ -81,9 +81,15 @@ def _verify_installed(target: matrix_module.FrameworkTarget) -> str | None:
     source = environment.install_source() or {}
     vcs = source.get("vcs_info") or {}
     if not vcs:
+        # 这条建议必须**真的能解决问题**：实测 `pip install "包 @ git+…@dev"` 在"已装的版本号
+        # 与目标声明值相同"时退出码 0 却什么都不装（pip 把这条直接引用当成已满足）。矩阵里
+        # 出现这种撞号是常态——dev 分支与已发布的 0.7.1b0 都声明 0.7.1b0——此时照抄上面那句
+        # "请先安装"就是照抄一条空操作，人会在原地绕圈。故把坑与可用的命令一起给出来。
         return (
             f"当前安装的 {target.name} 不是 git 安装，而矩阵选定的是 {target.specifier!r}。\n"
-            f"请先安装：pip install '{target.specifier}'"
+            "注意：**版本号相同时 `pip install` 不会换装**——它会退出码 0 却什么都不装"
+            "（dev 分支与已发布的 0.7.1b0 正是同一个版本号）。先卸掉再装：\n"
+            f"  pip uninstall -y {target.name} && pip install '{target.specifier}'"
         )
     if vcs.get("requested_revision") != target.ref:
         return (
