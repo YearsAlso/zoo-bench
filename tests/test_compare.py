@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -271,7 +272,12 @@ def test_compare_refuses_and_names_the_missing_version(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
-def test_compare_writes_both_formats(tmp_path: Path) -> None:
+def test_compare_writes_every_artifact(tmp_path: Path) -> None:
+    """同时产出可读的对比页与**机器可读的对比结果**。
+
+    后者不是多余的：站点首页据此列出对比页、并显示"两侧是否自检通过"，读者据此判断这份对比
+    可不可信；它也保证对比里的每一项数字都能被复核，而不是只存在于 HTML 的排版里。
+    """
     results = tmp_path / "results"
     before, after = _pair()
     _archive(results, BEFORE, before)
@@ -284,3 +290,11 @@ def test_compare_writes_both_formats(tmp_path: Path) -> None:
     assert (out / "compare.md").is_file()
     assert (out / "index.html").is_file()
     assert "版本对比" in (out / "compare.md").read_text(encoding="utf-8")
+
+    payload = json.loads((out / "compare.json").read_text(encoding="utf-8"))
+    assert payload["before"]["label"] == "1.0.0"
+    assert payload["after"]["label"] == "2.0.0"
+    assert payload["shared_unit_count"] == 2
+    # 首页读的就是这两个字段，故它们必须真的在机器可读的那份里
+    assert payload["before"]["self_check_ok"] is True
+    assert payload["after"]["self_check_ok"] is True

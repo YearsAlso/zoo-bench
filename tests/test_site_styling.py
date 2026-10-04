@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -174,6 +175,62 @@ def test_index_omits_versions_whose_report_was_not_rendered(tmp_path: Path) -> N
 
     assert "version-card" not in page
     assert "还没有任何已渲染的报告" in page
+
+
+def test_index_lists_compare_pages_with_their_labels(tmp_path: Path) -> None:
+    """对比页要能从首页进得去，且标题取自**对比自己的结果**而不是目录名。
+
+    目录名是 slug 拼出来的（`compare-zoo-framework-0.6.0--zoo-framework-0.7.1b0`），而 slug 里
+    本来就有连字符——照着目录名解析出来的标签迟早对不上。故标题读 `compare.json` 里两侧的标签。
+    """
+    site = tmp_path / "site"
+    directory = site / "compare-zoo-framework-0.6.0--zoo-framework-0.7.1b0"
+    directory.mkdir(parents=True)
+    (directory / "index.html").write_text("x", encoding="utf-8")
+    (directory / "compare.json").write_text(
+        json.dumps(
+            {
+                "before": {"label": "0.6.0", "self_check_ok": True},
+                "after": {"label": "0.7.1b0", "self_check_ok": True},
+                "shared_unit_count": 96,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    page = index_renderer.render(tmp_path / "results", site).read_text(encoding="utf-8")
+
+    assert "compare-card" in page
+    assert "0.6.0 → 0.7.1b0" in page, "标题应取对比结果里的标签"
+    assert "96" in page, "共有单元数应来自对比结果"
+    assert "两侧自检均通过" in page
+    assert 'href="compare-zoo-framework-0.6.0--zoo-framework-0.7.1b0/index.html"' in page
+
+
+def test_index_omits_compare_directories_without_a_page(tmp_path: Path) -> None:
+    """只有目录、没有对比页时不进列表——链接不能指向空处。"""
+    (tmp_path / "site" / "compare-a--b").mkdir(parents=True)
+
+    page = index_renderer.render(tmp_path / "results", tmp_path / "site").read_text(
+        encoding="utf-8"
+    )
+
+    assert "compare-card" not in page
+
+
+def test_compare_card_does_not_fabricate_a_trust_verdict(tmp_path: Path) -> None:
+    """读不到机器可读结果时**不猜"自检通过"**——"不知道"与"通过了"是两回事，
+    而这一栏正是读者判断这份对比可不可信的依据。"""
+    site = tmp_path / "site"
+    directory = site / "compare-a--b"
+    directory.mkdir(parents=True)
+    (directory / "index.html").write_text("x", encoding="utf-8")
+
+    page = index_renderer.render(tmp_path / "results", site).read_text(encoding="utf-8")
+
+    assert "compare-card" in page, "对比页存在就该能进得去"
+    assert "两侧自检均通过" not in page
+    assert "不作数" not in page, "读不到状态时既不能说通过、也不能说未通过"
 
 
 def test_index_ships_the_stylesheet(tmp_path: Path) -> None:

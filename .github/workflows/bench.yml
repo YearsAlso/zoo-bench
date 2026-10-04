@@ -92,6 +92,34 @@ jobs:
             exit 1
           fi
 
+      - name: 生成跨版本对比
+        # 「每个版本完成后给出一个性能提升报告」那条用途的落点：把矩阵里**相邻两个目标**的对比
+        # 做成页面放进站点。对比只读留档、不重新测量（`compare` 做的是聚合），故这一步很便宜。
+        # **相邻 = 矩阵里的书写顺序**，不在这里另立一份"要比哪几对"的清单——两处真源必然漂移；
+        # 想改对比对象就改矩阵里的顺序。
+        run: |
+          set -u
+          failed=""
+          previous=""
+          while read -r framework; do
+            [ -n "$framework" ] || continue
+            if [ -n "$previous" ]; then
+              old=$(python -c \
+                "from zoo_bench.storage import framework_slug; print(framework_slug('''$previous'''))")
+              new=$(python -c \
+                "from zoo_bench.storage import framework_slug; print(framework_slug('''$framework'''))")
+              if ! zoo-bench compare "$previous" "$framework" --out "site/compare-$old--$new"; then
+                failed="$failed compare:$old..$new"
+              fi
+            fi
+            previous="$framework"
+          done < <(zoo-bench frameworks)
+
+          if [ -n "$failed" ]; then
+            echo "::error::以下步骤未完成：$failed"
+            exit 1
+          fi
+
       - name: 写站点首页
         run: zoo-bench index --site site
 

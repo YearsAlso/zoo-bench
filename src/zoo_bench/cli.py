@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -310,6 +311,11 @@ def compare_command(args: argparse.Namespace) -> int:
     write_style(out)
     (out / "compare.md").write_text(compare_renderer.render_markdown(comparison), encoding="utf-8")
     (out / "index.html").write_text(compare_renderer.render_html(comparison), encoding="utf-8")
+    # 同时留一份机器可读的结果：站点首页据此列出对比页并显示"两侧是否自检通过"（读者据此判断
+    # 这份对比可不可信），也让对比里的每一项数字都能被复核——与留档同源，而不是只存在于 HTML 里。
+    (out / "compare.json").write_text(
+        json.dumps(comparison, ensure_ascii=False), encoding="utf-8"
+    )
     print(f"对比：{out / 'index.html'}")
     return 0
 

@@ -53,6 +53,30 @@ def test_workflow_reads_versions_through_the_cli() -> None:
     assert "zoo-bench frameworks" in _text(), "版本清单必须经 zoo-bench frameworks 读取"
 
 
+def _steps() -> list[dict]:
+    return _document()["jobs"]["bench"]["steps"]
+
+
+def test_workflow_publishes_comparisons_between_adjacent_versions() -> None:
+    """「每个版本完成后给出一个性能提升报告」要有落点：站点上能读到相邻两版的对比。
+
+    **比哪几对由矩阵里的书写顺序决定**，不在这里另立一份清单——两处真源必然漂移。故这一步
+    只允许有一处，且必须经 `zoo-bench frameworks` 拿顺序。
+    """
+    compare_steps = [step for step in _steps() if "zoo-bench compare" in (step.get("run") or "")]
+    assert len(compare_steps) == 1, "对比生成应恰好是一步，不要在两处各生成一遍"
+
+    run = compare_steps[0]["run"]
+    assert "--out" in run and "site/" in run, "对比页要落进站点目录"
+    assert "zoo-bench frameworks" in run, "比哪几对由矩阵顺序决定，不是抄在流程里"
+
+
+def test_workflow_lists_comparisons_after_generating_them() -> None:
+    """首页会**发现**站点里的对比页，故生成必须排在写首页之前——顺序反了就列不出来。"""
+    names = [step.get("name", "") for step in _steps()]
+    assert names.index("生成跨版本对比") < names.index("写站点首页")
+
+
 def test_workflow_grants_write_only_where_needed() -> None:
     """写权限只给两处，各有理由。
 

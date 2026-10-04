@@ -56,7 +56,9 @@ back to one generation's path and measures something the framework does not actu
   serialized from the same block list, so they cannot disagree with each other.
 - **The raw data is public**: `results/<framework-version>/<timestamp>.json` in this repository,
   containing **per-round samples** (not just aggregates), so the aggregation itself can be audited.
-- Version over version: `zoo-bench compare <v1> <v2>`.
+- Version over version: `zoo-bench compare <v1> <v2>`. The site also publishes a **comparison page
+  for each adjacent pair in `matrix.yaml`**, so "what changed since the previous version" is
+  readable online rather than only from the CLI.
 
 ### Run it locally
 
@@ -116,8 +118,13 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
   drive the headline.
 - On CI this runs on a shared `ubuntu-latest` runner: relative comparisons hold, absolute numbers
   drift between runs.
-- Every push to `main` commits roughly **2.8 MB** of raw data to this repository.
-- Any push to `main` — even docs-only — triggers a full ~5-minute measurement run.
+- Every push to `main` commits roughly **7.6 MB** of raw data to this repository (three targets,
+  ~2.6 MB each; the files are JSON, so git stores them compressed to roughly a quarter of that).
+- Any push to `main` — even docs-only — triggers a full ~13-minute measurement run.
+- **Git LFS is deliberately not used for `results/`.** The largest file is ~2.8 MB (GitHub's warning
+  threshold is 50 MB), a push adds ~1.9 MB of compressed history, and LFS would make the raw data
+  require tooling to read — the opposite of "publicly auditable". Revisit if the repo passes
+  roughly 1 GB or the archives outgrow a single commit.
 - Comparisons against Rust are out of scope here; see the framework repo's `bench/DECISION.md`.
 
 ---
@@ -159,7 +166,8 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
   列表序列化，故它们不可能互相矛盾。
 - **原始数据是公开的**：本仓库的 `results/<框架版本>/<时间戳>.json`，含**逐轮原始样本**
   （不只是聚合值），所以聚合本身也可以被审计。
-- 跨版本：`zoo-bench compare <v1> <v2>`。
+- 跨版本：`zoo-bench compare <v1> <v2>`。站点上还会发布 **`matrix.yaml` 里每一对相邻目标的
+  对比页**，所以"比上一版变了什么"在网上就能读到，不必只靠命令行。
 
 ### 在本地跑
 
@@ -214,6 +222,10 @@ openspec/changes/archive/   建立本仓库的那个变更：proposal / design D
 - 并发度超出机器容量时，开销数字**含排队等待**；报告会点名这些组并**不给它们交叉点**，
   而不是让一个排队数字去左右结论。
 - CI 跑在共享的 `ubuntu-latest` 上：相对比较成立，绝对数字逐轮漂移。
-- 每次推送到 `main` 会往本仓库提交约 **2.8 MB** 原始数据。
-- 任何推送到 `main`（哪怕只改文档）都会触发一轮约 5 分钟的完整测量。
+- 每次推送到 `main` 会往本仓库提交约 **7.6 MB** 原始数据（三个目标、每个约 2.6 MB；内容是
+  JSON，git 存进历史时约压到四分之一）。
+- 任何推送到 `main`（哪怕只改文档）都会触发一轮约 13 分钟的完整测量。
+- **`results/` 刻意不用 Git LFS。** 最大的文件约 2.8 MB（GitHub 的告警线是 50 MB），
+  一次推送只给历史加约 1.9 MB 压缩后体积；而 LFS 会让原始数据变成**需要装工具才能读**——
+  恰好与"公开可审计"相反。等仓库超过约 1 GB、或单份归档大到塞不进一次提交时再回来看。
 - 与 Rust 的对照不在本仓库范围内，见框架仓库的 `bench/DECISION.md`。
