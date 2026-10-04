@@ -310,30 +310,62 @@ def _chart_blocks(charts: list[dict[str, Any]], figures_rel: str) -> list[Block]
     return blocks
 
 
+def _pivot_block(
+    rows: list[dict[str, Any]], *, value_of: Any, subject: str | None
+) -> Block:
+    """把逐单元行透成"行 = (并发度, 档位)、列 = 方案"的一张表。
+
+    **列序把被测框架放最前**：读者的动作是"拿被测框架那一列去比别的列"，放在第一列就省掉在六个
+    方案里找它。行数从"单元数"降到"并发度 × 档位"，比较于是变成扫一列——逐单元表做不到这一点。
+    """
+    adapters = sorted({row["adapter"] for row in rows})
+    if subject in adapters:
+        adapters.remove(subject)
+        adapters.insert(0, subject)
+
+    cells = {
+        (row["adapter"], row["concurrency"], row["body_tier_us"]): value_of(row) for row in rows
+    }
+    keys = sorted({(row["concurrency"], row["body_tier_us"]) for row in rows})
+
+    return Block(
+        TABLE,
+        headers=("并发度", "执行体档位（微秒）", *adapters),
+        rows=tuple(
+            (
+                str(concurrency),
+                f"{tier:g}",
+                *(cells.get((adapter, concurrency, tier), "—") for adapter in adapters),
+            )
+            for concurrency, tier in keys
+        ),
+    )
+
+
+#: 正文给透视表配的指引：明细在附录里，位置写清楚，读者不必找。
+_APPENDIX_POINTER = "逐单元数值（分位数、离散度、各轮原始样本）见文末「附录：全部数值」。"
+
+
 def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
+    """正文里的度量维度：**透视表**，明细留给附录。
+
+    正文只回答"多大的任务用哪个方案"这一个问题，故每维只出一张"行 = (并发度, 档位)、列 = 方案"
+    的透视表；分位数、离散度这类核对用的字段在附录里逐单元给出（见 :func:`_appendix_blocks`）。
+    """
     dimensions = model.get("dimensions", {})
+    subject = model.get("subject")
     blocks: list[Block] = []
 
     latency = dimensions.get("latency", {})
     blocks += [
         _heading(f"维度：{latency.get('title', '延迟')}"),
         Block(NOTE, text=str(latency.get("note", ""))),
-        Block(
-            TABLE,
-            headers=("方案", "并发度", "执行体档位（微秒）", "中位数", "p95", "p99", "相对离散度"),
-            rows=tuple(
-                (
-                    row["adapter"],
-                    str(row["concurrency"]),
-                    f"{row['body_tier_us']:g}",
-                    format_seconds(row["end_to_end_per_task"]["median"]),
-                    format_seconds(row["end_to_end_per_task"]["p95"]),
-                    format_seconds(row["end_to_end_per_task"]["p99"]),
-                    f"{float(row['end_to_end_per_task']['relative_spread']):.3f}",
-                )
-                for row in latency.get("rows", [])
-            ),
+        _pivot_block(
+            latency.get("rows", []),
+            value_of=lambda row: format_seconds(row["end_to_end_per_task"]["median"]),
+            subject=subject,
         ),
+        Block(PARAGRAPH, text=_APPENDIX_POINTER),
     ]
 
     overhead = dimensions.get("overhead", {})
@@ -342,46 +374,30 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
     overhead_note = str(overhead.get("note", ""))
     if withheld:
         overhead_note += (
-            "。**带 — 的行**：该并发度超出这台机器的并行能力，执行体自报耗时含超订的调度等待，"
+            "。**带 — 的格**：该并发度超出这台机器的并行能力，执行体自报耗时含超订的调度等待，"
             "与该行的每任务端到端不可比，故不给开销数字（端到端与吞吐见各自的维度）"
         )
     blocks += [
         _heading(f"维度：{overhead.get('title', '框架开销')}"),
         Block(NOTE, text=overhead_note),
-        Block(
-            TABLE,
-            headers=("方案", "并发度", "执行体档位（微秒）", "框架开销", "开销占比", "执行体实测"),
-            rows=tuple(
-                (
-                    row["adapter"],
-                    str(row["concurrency"]),
-                    f"{row['body_tier_us']:g}",
-                    format_seconds(row["framework_overhead_seconds"]),
-                    format_ratio(row["framework_overhead_ratio"]),
-                    format_seconds(row["body_seconds"]),
-                )
-                for row in overhead.get("rows", [])
-            ),
+        _pivot_block(
+            overhead.get("rows", []),
+            value_of=lambda row: format_ratio(row["framework_overhead_ratio"]),
+            subject=subject,
         ),
+        Block(PARAGRAPH, text=_APPENDIX_POINTER),
     ]
 
     throughput = dimensions.get("throughput", {})
     blocks += [
         _heading(f"维度：{throughput.get('title', '吞吐')}"),
         Block(NOTE, text=str(throughput.get("note", ""))),
-        Block(
-            TABLE,
-            headers=("方案", "并发度", "执行体档位（微秒）", "吞吐（任务/秒）"),
-            rows=tuple(
-                (
-                    row["adapter"],
-                    str(row["concurrency"]),
-                    f"{row['body_tier_us']:g}",
-                    f"{row['throughput_per_second']:.1f}",
-                )
-                for row in throughput.get("rows", [])
-            ),
+        _pivot_block(
+            throughput.get("rows", []),
+            value_of=lambda row: f"{float(row['throughput_per_second']):.1f}",
+            subject=subject,
         ),
+        Block(PARAGRAPH, text=_APPENDIX_POINTER),
     ]
 
     blocks += _attribution_blocks(dimensions)
@@ -623,6 +639,143 @@ def _favorable_blocks(model: dict[str, Any]) -> list[Block]:
     return blocks
 
 
+def _tied_blocks(model: dict[str, Any]) -> list[Block]:
+    """分不出胜负的档位：两侧差异小于该档位的带宽。
+
+    **单列成节、覆盖全部所测档位**：它既不是"藏东西"的地方，也不是优/劣两节的子集。把噪声级差异
+    报成「快 1.00x」才是问题所在，而不是把它们如实列出来。
+    """
+    tied = model.get("tied", {})
+    blocks = [
+        _heading("分不出胜负的档位"),
+        Block(NOTE, text=str(tied.get("note", ""))),
+    ]
+    band = model.get("tie_band") or {}
+    if band.get("definition"):
+        blocks.append(Block(NOTE, text=f"判据：{band['definition']}"))
+
+    low, high = tied.get("band_min"), tied.get("band_max")
+    if low is not None and high is not None:
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=f"本期带宽：{float(low) * 100:.1f}% 到 {float(high) * 100:.1f}%"
+                "（随各档位的离散度不同而不同）。",
+            )
+        )
+
+    items = tied.get("items", [])
+    if not items:
+        blocks.append(Block(PARAGRAPH, text="所测档位内每一档都分得出胜负。"))
+        return blocks
+
+    blocks.append(
+        Block(
+            TABLE,
+            headers=("对照方案", "并发度", "执行体档位（微秒）", "比值", "原因"),
+            rows=tuple(
+                (
+                    item["baseline"],
+                    str(item["concurrency"]),
+                    f"{item['body_tier_us']:g}",
+                    f"{float(item['baseline_ratio_vs_subject']):.2f}x",
+                    item["reason"],
+                )
+                for item in items
+            ),
+        )
+    )
+    return blocks
+
+
+#: 附录的说明：为什么明细在末尾、以及它一个都没少。
+APPENDIX_NOTE = (
+    "正文为可读性只给透视表；这里逐单元给出**改动前的全部字段**（分位数、离散度、执行体实测等）。"
+    "**数值一个不少**：明细放在报告主体内，而不是外链、折叠或附件——「可查」一旦要另外去找，"
+    "就等于不可查"
+)
+
+
+def _appendix_blocks(model: dict[str, Any]) -> list[Block]:
+    """附录：全部数值 —— 逐单元明细。
+
+    位置在正文之后只解决**顺序**，不减少任何一行：读者要核对某个数字时翻到这里，逐单元逐字段都在。
+    """
+    dimensions = model.get("dimensions", {})
+    blocks: list[Block] = [_heading("附录：全部数值"), Block(NOTE, text=APPENDIX_NOTE)]
+
+    latency = dimensions.get("latency", {})
+    if latency.get("rows"):
+        blocks.append(_heading(f"附录：{latency.get('title', '延迟')}", level=3))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=(
+                    "方案",
+                    "并发度",
+                    "执行体档位（微秒）",
+                    "中位数",
+                    "p95",
+                    "p99",
+                    "相对离散度",
+                ),
+                rows=tuple(
+                    (
+                        row["adapter"],
+                        str(row["concurrency"]),
+                        f"{row['body_tier_us']:g}",
+                        format_seconds(row["end_to_end_per_task"]["median"]),
+                        format_seconds(row["end_to_end_per_task"]["p95"]),
+                        format_seconds(row["end_to_end_per_task"]["p99"]),
+                        f"{float(row['end_to_end_per_task']['relative_spread']):.3f}",
+                    )
+                    for row in latency["rows"]
+                ),
+            )
+        )
+
+    overhead = dimensions.get("overhead", {})
+    if overhead.get("rows"):
+        blocks.append(_heading(f"附录：{overhead.get('title', '框架开销')}", level=3))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=("方案", "并发度", "执行体档位（微秒）", "框架开销", "开销占比", "执行体实测"),
+                rows=tuple(
+                    (
+                        row["adapter"],
+                        str(row["concurrency"]),
+                        f"{row['body_tier_us']:g}",
+                        format_seconds(row["framework_overhead_seconds"]),
+                        format_ratio(row["framework_overhead_ratio"]),
+                        format_seconds(row["body_seconds"]),
+                    )
+                    for row in overhead["rows"]
+                ),
+            )
+        )
+
+    throughput = dimensions.get("throughput", {})
+    if throughput.get("rows"):
+        blocks.append(_heading(f"附录：{throughput.get('title', '吞吐')}", level=3))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=("方案", "并发度", "执行体档位（微秒）", "吞吐（任务/秒）"),
+                rows=tuple(
+                    (
+                        row["adapter"],
+                        str(row["concurrency"]),
+                        f"{row['body_tier_us']:g}",
+                        f"{float(row['throughput_per_second']):.1f}",
+                    )
+                    for row in throughput["rows"]
+                ),
+            )
+        )
+    return blocks
+
+
 def _unfavorable_blocks(model: dict[str, Any]) -> list[Block]:
     unfavorable = model.get("unfavorable", {})
     blocks = [
@@ -770,10 +923,13 @@ def build_blocks(
         blocks += builder(model)
     blocks += _chart_blocks(charts, figures_rel)
     blocks += _dimension_blocks(model)
-    # 优势与不利紧邻、结构对称：两者出自同一份同运行内比值，读者按"赢在哪 / 输在哪"读
+    # 优 / 平 / 劣三节同源同显著：读者按「赢在哪、分不出、输在哪」成对地读，任一方都不是脚注
     blocks += _favorable_blocks(model)
     blocks += _unfavorable_blocks(model)
+    blocks += _tied_blocks(model)
     blocks += _caveat_blocks(model)
     blocks += _extension_blocks()
     blocks += _self_check_blocks(model)
+    # 明细在最后：正文先给结论与透视，读者要核对时再翻附录
+    blocks += _appendix_blocks(model)
     return blocks

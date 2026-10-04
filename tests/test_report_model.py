@@ -35,6 +35,24 @@ def _summary(value: float, n: int = 3) -> dict[str, float | int]:
     }
 
 
+#: 合成单元的逐轮样本：**分类要用它算"分得出胜负"的带宽**（见 report.MIN_ROUNDS_FOR_BAND），
+#: 故 fixture 必须像真实留档那样带上 ``rounds``。抖动按 (i % 3 - 1) * jitter 造出可控的离散度。
+DEFAULT_ROUNDS = 8
+
+
+def _rounds(
+    *, e2e_per_task: float, concurrency: int, jitter: float = 0.02, count: int = DEFAULT_ROUNDS
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "batch": concurrency,
+            "wall_seconds": concurrency * e2e_per_task * (1.0 + jitter * ((index % 3) - 1)),
+            "round": index,
+        }
+        for index in range(count)
+    ]
+
+
 def _unit(
     adapter: str,
     *,
@@ -43,6 +61,7 @@ def _unit(
     body: float,
     concurrency: int = 4,
     meta: dict[str, Any] | None = None,
+    jitter: float = 0.02,
 ) -> dict[str, Any]:
     overhead = e2e_per_task - body
     adapter_meta: dict[str, Any] = {
@@ -68,12 +87,15 @@ def _unit(
             "throughput_per_second": concurrency / e2e_per_task,
         },
         "checks": {"body": {"body_deviation_ok": True}},
+        "rounds": _rounds(
+            e2e_per_task=e2e_per_task, concurrency=concurrency, jitter=jitter
+        ),
     }
 
 
 def _subject_unit(
     *, tier_us: float, e2e_per_task: float, body: float, concurrency: int = 4,
-    drive_level: str = "调度派发层",
+    drive_level: str = "调度派发层", jitter: float = 0.02,
 ) -> dict[str, Any]:
     """被测框架的单元：**必须声明 tier 为 ``under_test``**，否则模型识别不出被测对象。
 
@@ -88,6 +110,7 @@ def _subject_unit(
         body=body,
         concurrency=concurrency,
         meta={"tier": "under_test", "drive_level": drive_level},
+        jitter=jitter,
     )
 
 
@@ -406,15 +429,20 @@ def test_conclusion_admits_absence_of_a_crossing() -> None:
 
 
 def test_unfavorable_lists_the_tiers_where_a_baseline_is_faster() -> None:
+    # **对照方案也要有单元**：三分类的带宽取自两侧的逐轮离散度，缺一侧就判不了（会进"分不出胜负"）
     units = [
-        _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300, 2700)
+        _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008)
+        for tier in (40, 300, 2700)
+    ] + [
+        _unit("bare_thread", tier_us=tier, e2e_per_task=0.0001, body=0.00008)
+        for tier in (40, 300, 2700)
     ]
     model = build_model(
         _result(
             units,
             [
                 _comparison(40, 0.0001, {"bare_thread": 0.50}),
-                _comparison(300, 0.0001, {"bare_thread": 0.90}),
+                _comparison(300, 0.0001, {"bare_thread": 0.80}),
                 _comparison(2700, 0.0001, {"bare_thread": 1.10}),
             ],
         )
@@ -431,7 +459,9 @@ def test_unfavorable_lists_the_tiers_where_a_baseline_is_faster() -> None:
 
 def test_unfavorable_records_when_the_baseline_never_loses() -> None:
     """对照方案在所测档位内始终更快时，明说"未观测到"，并把每个档位列为不利数据。"""
-    units = [_subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)]
+    units = [
+        _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)
+    ] + [_unit("bare_thread", tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)]
     model = build_model(
         _result(
             units,
@@ -806,15 +836,38 @@ def test_attribution_flags_a_negative_segment_even_when_the_total_is_positive() 
 # ------------------------------------------------------------------ 优势数据（与不利数据对称）
 
 
-def _pair_with(ratios: dict[str, float], *, concurrency: int = 4, tier_us: float = 300.0) -> dict[str, Any]:
-    """一份带逐档相对比的运行结果。``ratios`` 是"对照方案耗时 / 被测框架耗时"。"""
+def _pair_with(
+    ratios: dict[str, float],
+    *,
+    concurrency: int = 4,
+    tier_us: float = 300.0,
+    jitter: float = 0.02,
+    rounds: bool = True,
+) -> dict[str, Any]:
+    """一份带逐档相对比的运行结果。``ratios`` 是"对照方案耗时 / 被测框架耗时"。
+
+    ``jitter`` 控制逐轮离散度（分类的带宽由它算出）：小抖动 → 带宽窄、差异分得出；大抖动 →
+    带宽宽、同样的比值会被判成"分不出胜负"。``rounds=False`` 用来造"缺少逐轮样本"的老留档形态。
+    """
     units = [
-        _subject_unit(tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency),
+        _subject_unit(
+            tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency, jitter=jitter
+        ),
     ]
     units.extend(
-        _unit(adapter, tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency)
+        _unit(
+            adapter,
+            tier_us=tier_us,
+            e2e_per_task=0.0004,
+            body=0.0003,
+            concurrency=concurrency,
+            jitter=jitter,
+        )
         for adapter in ratios
     )
+    if not rounds:
+        for unit in units:
+            unit.pop("rounds", None)
     return _result(units, [_comparison(tier_us, 0.0004, ratios)])
 
 
@@ -891,3 +944,54 @@ def test_advantage_chart_covers_every_sampled_concurrency(tmp_path: Path) -> Non
     assert "2 个" in chart["scope"], "面板数要写明，读者才知道覆盖了几个并发度"
     for suffix in ("svg", "png"):
         assert Path(chart["paths"][suffix]).is_file()
+
+
+def test_noise_level_difference_lands_in_tied_not_in_either_side() -> None:
+    """差异小于带宽时归"分不出胜负"——把噪声报成「快 1.00x」正是这次重设计要消掉的东西。"""
+    result = _pair_with({"thread_pool": 1.01})
+
+    model = build_model(result)
+
+    assert model["favorable"]["items"] == []
+    assert model["unfavorable"]["items"] == []
+    assert len(model["tied"]["items"]) == 1
+    assert "小于带宽" in model["tied"]["items"][0]["reason"]
+    assert model["tied"]["items"][0]["band"] is not None
+
+
+def test_the_band_scales_with_the_runs_own_dispersion() -> None:
+    """同一个 1.20x：抖动小 → 分得出（优势）；抖动大 → 分不出（平手）。
+
+    这条证明带宽**不是写死的百分比**——它随同一次运行的离散度变。写死一个值的话，噪声小的机器
+    上会过宽（把真差异藏掉）、噪声大的机器上过窄（把噪声当信号）。
+    """
+    calm = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.02))
+    noisy = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.30))
+
+    assert calm["favorable"]["found"] is True, "抖动 2% 时 20% 的差异分得出"
+    assert noisy["favorable"]["found"] is False, "抖动 30% 时同一条差异分不出"
+    assert noisy["tied"]["found"] is True
+    assert noisy["tied"]["items"][0]["band"] > calm["favorable"]["items"][0]["band"]
+
+
+def test_missing_rounds_means_no_verdict_rather_than_a_guessed_band() -> None:
+    """缺少逐轮样本时不判，并写明原因——编一个默认带宽等于让一个无法复核的数参与结论。"""
+    result = _pair_with({"thread_pool": 1.50}, rounds=False)
+
+    model = build_model(result)
+
+    assert model["favorable"]["found"] is False, "判不了就不能说它更快"
+    assert len(model["tied"]["items"]) == 1
+    assert "缺少逐轮样本" in model["tied"]["items"][0]["reason"]
+    assert model["tied"]["items"][0]["band"] is None
+
+
+def test_the_band_and_its_definition_travel_with_the_report() -> None:
+    """带宽的数值与算法都要随报告给出，读者才能复核某个"分不出胜负"的判定。"""
+    model = build_model(_pair_with({"thread_pool": 1.01}))
+
+    band = model["tie_band"]
+    assert "跨轮相对离散度" in band["definition"]
+    assert "标准差 / 中位数" in band["definition"]
+    assert model["tied"]["band_min"] is not None and model["tied"]["band_max"] is not None
+    assert model["tied"]["band_min"] <= model["tied"]["band_max"]

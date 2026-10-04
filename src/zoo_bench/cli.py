@@ -224,10 +224,14 @@ def render_command(args: argparse.Namespace) -> int:
         )
         return 6
 
-    if not model["unfavorable"]["found"]:
+    # **平手也算"不是只展示自己赢"的证据**：差异小于带宽的档位不是劣势，但它们同样是"这一轮
+    # 没有被测框架占优"的如实记录。把平手排除在门禁之外会误伤——框架与对照处处打平时不利集为
+    # 空，而那正是判据的结果，不是"档位选得不合适"。
+    if not (model["unfavorable"]["found"] or model.get("tied", {}).get("found")):
         if not args.allow_empty_unfavorable:
             print(
-                "本轮测量里没有出现被测框架处于劣势的档位，拒绝出报告。"
+                "本轮测量里既没有被测框架处于劣势的档位，也没有分不出胜负的档位——"
+                "等于每一档都显示它占优，拒绝出报告。"
                 "\n框架开销是纯增量，短任务档位上出现劣势是预期结果；没有它通常意味着"
                 "档位选得不合适或测量有问题。确需发布请加 --allow-empty-unfavorable——"
                 "该豁免会被写进报告，使例外是审计线索而不是被人忘掉的一步。",
@@ -237,7 +241,8 @@ def render_command(args: argparse.Namespace) -> int:
         model["caveats"].append(
             {
                 "kind": "发布豁免",
-                "text": "本轮测量不含被测框架处于劣势的档位，经 --allow-empty-unfavorable "
+                "text": "本轮测量既不含被测框架处于劣势的档位、也不含分不出胜负的档位，"
+                "经 --allow-empty-unfavorable "
                 "显式豁免发布。该豁免是审计线索：再次出现同样情形时应先检查档位选择与"
                 "测量是否正常，而不是习惯性地豁免。",
             }

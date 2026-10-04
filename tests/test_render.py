@@ -452,7 +452,7 @@ def test_overhead_table_explains_a_withheld_row() -> None:
 
     text = markdown_renderer.render_markdown(model, [])
 
-    assert "带 — 的行" in text, "开销表要说明横杠的含义"
+    assert "带 — 的格" in text, "开销表要说明横杠的含义（透视表里横杠落在格上）"
     assert "并行能力" in text
     assert "相减的结果没有意义" in text, "交叉点表要把那一行的原因带出来，而不是只给一个横杠"
 
@@ -461,7 +461,7 @@ def test_overhead_table_gets_no_explanation_when_every_row_is_readable() -> None
     """全部可读时不加那句说明——多余的话会让读者去找一个并不存在的例外。"""
     text = markdown_renderer.render_markdown(_model(), [])
 
-    assert "带 — 的行" not in text
+    assert "带 — 的格" not in text
 
 
 def test_attribution_section_renders_segments_and_the_conclusion() -> None:
@@ -685,3 +685,153 @@ def test_render_all_includes_the_relative_multiple_chart(tmp_path: Path) -> None
     figures = charts.render_all(model, tmp_path / "figures", threshold=0.15)
 
     assert any(chart["figure"] == "relative_multiple" for chart in figures)
+
+
+def test_body_shows_pivots_and_the_appendix_keeps_every_field() -> None:
+    """正文是透视表，明细在附录——**而字段一个不少**。
+
+    这条防的是"为了短而悄悄少一列"：那类改动没有任何告警，故用字段集合的包含关系把它钉住。
+    """
+    model = _model()
+    text = markdown_renderer.render_markdown(model, [])
+
+    # 按**标题**切：正文里那句指引也提到附录的名字，按名字切会切在指引上
+    body = text[: text.index("## 附录：全部数值")]
+    appendix = text[text.index("## 附录：全部数值") :]
+
+    assert "| 并发度 | 执行体档位（微秒） |" in body, "正文应是透视表（行 = 并发度与档位、列 = 方案）"
+    assert _APPENDIX_POINTER_TEXT in body, "正文要指向附录，读者不必找"
+    for field_header in ("中位数", "p95", "p99", "相对离散度", "执行体实测", "框架开销", "开销占比"):
+        assert field_header in appendix, f"附录里少了字段：{field_header}"
+
+
+_APPENDIX_POINTER_TEXT = "见文末「附录：全部数值」"
+
+
+def test_tie_section_states_the_band_and_its_definition() -> None:
+    """平手节必须给出带宽与判据——不给判据的"分不出胜负"读者无法复核。"""
+    model = _model()
+    model["tied"] = {
+        "items": [
+            {
+                "baseline": "thread_pool",
+                "concurrency": 4,
+                "body_tier_us": 2700.0,
+                "subject_median_seconds": 0.0027,
+                "baseline_ratio_vs_subject": 1.01,
+                "band": 0.04,
+                "reason": "两侧差异 1.0% 小于带宽 4.0%，分不出胜负",
+            }
+        ],
+        "note": "平手节的说明",
+        "found": True,
+        "band_min": 0.012,
+        "band_max": 0.045,
+    }
+    model["tie_band"] = {"definition": "带宽 = 两侧各自的跨轮相对离散度之和"}
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "分不出胜负的档位" in text
+    assert "1.2% 到 4.5%" in text, "本期带宽要给出具体数值"
+    assert "跨轮相对离散度" in text, "判据要随报告给出（不能只说分不出胜负）"
+    assert "小于带宽" in text
+
+
+def test_tie_section_says_so_when_every_tier_is_decidable() -> None:
+    """每一档都分得出胜负时说清这一点——空节与"没测"必须分得开。"""
+    model = _model()
+    model["tied"] = {"items": [], "note": "说明", "found": False, "band_min": None, "band_max": None}
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "分不出胜负的档位" in text
+    assert "每一档都分得出胜负" in text
+
+
+def _spread_rounds(*, e2e: float, jitter: float, concurrency: int = 1) -> list[dict[str, Any]]:
+    """逐轮样本：分类的带宽由它算出来，故桩数据要像真实留档那样带上。"""
+    return [
+        {
+            "batch": concurrency,
+            "wall_seconds": concurrency * e2e * (1.0 + jitter * ((index % 3) - 1)),
+            "round": index,
+        }
+        for index in range(8)
+    ]
+
+
+def _baseline_stub_unit(adapter: str) -> dict[str, Any]:
+    unit = _subject_stub_unit()
+    unit["spec"] = {"adapter": adapter, "concurrency": 1, "body_tier_us": 300.0}
+    unit["adapter"] = {
+        "name": adapter,
+        "tier": "bare",
+        "comparable": True,
+        "notes": "",
+        "drive_level": "",
+    }
+    return unit
+
+
+def _save_comparison_run(root: Path, *, ratios: dict[str, float]) -> None:
+    """存一份**两侧都有逐轮样本**的桩留档：带宽算得出，三分类判得了。"""
+    units = [_subject_stub_unit(), *(_baseline_stub_unit(name) for name in ratios)]
+    for unit in units:
+        unit["rounds"] = _spread_rounds(e2e=0.0003, jitter=0.02)
+
+    storage.save_run(
+        {
+            "run": {"absolute_note": ABSOLUTE_NOTE},
+            "units": units,
+            "relative": {
+                "comparisons": [
+                    {
+                        "concurrency": 1,
+                        "body_tier_us": 300.0,
+                        "subject_median_seconds": 0.0003,
+                        "ratios_vs_subject": ratios,
+                    }
+                ]
+            },
+            "environment": {
+                "hardware": {"logical_cores": 8},
+                "os": {},
+                "python": {},
+                "harness": {},
+                "subject": {},
+            },
+            "semantics": None,
+            "self_check": {"ok": True},
+        },
+        framework=FRAMEWORK,
+        root=root,
+    )
+
+
+def test_render_publishes_when_the_only_losing_evidence_is_a_tie(tmp_path: Path) -> None:
+    """不利集为空、但有平手时**不得**被拒：那是判据的结果，不是"只展示自己赢"。"""
+    root = tmp_path / "results"
+    _save_comparison_run(root, ratios={"thread_pool": 1.00})
+
+    code = cli.main(
+        ["render", "--framework", "9.9.9", "--results", str(root), "--out", str(tmp_path / "site")]
+    )
+
+    assert code == 0, "处处打平时不利集为空，门禁若据此拒发就是误伤"
+    report = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
+    assert "分不出胜负的档位" in report
+    assert "小于带宽" in report, "平手要给出来由，读者才知道这不是漏测"
+
+
+def test_render_still_refuses_when_every_tier_favours_the_subject(tmp_path: Path) -> None:
+    """每一档都占优时仍拒发——门禁的鉴别力不能因为引入平手类而失效。"""
+    root = tmp_path / "results"
+    _save_comparison_run(root, ratios={"thread_pool": 1.50})
+
+    code = cli.main(
+        ["render", "--framework", "9.9.9", "--results", str(root), "--out", str(tmp_path / "site")]
+    )
+
+    assert code == 4
+    assert not (tmp_path / "site" / "report.md").exists()
