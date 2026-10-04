@@ -1,45 +1,71 @@
-/* zoo-bench 站点样式。
+/* zoo-bench 站点样式 —— 「测量记录」方向。
  *
- * 只管**观感**：配色、字号、留白、表格可读性、卡片与打印。内容与结构不在这里——它们在
- * `blocks.py`（说什么）与 `html.py`（HTML 骨架）里。这条分工写在这里，是因为"改样式顺手把
- * 结构也改了"是这类文件最常见的腐化方式。
+ * 设计意图：这份东西的可信度就是它的主题，所以视觉语言走**实验室记录 / 仪表读数**，
+ * 而不是营销落地页。具体三条：
  *
- * 站点的两类页面共用这一份：报告/对比页（长文 + 多张表）与首页（版本卡片）。
+ *   1. **字体分工**：标题用衬线（记录/论文感），正文用黑体，**数值与标识用等宽 +
+ *      tabular-nums** —— 测量工具就该是这个样子。不引任何外部字体（CI 离线渲染、
+ *      Pages 直出），靠系统字体的搭配而非下载来建立性格。
+ *   2. **颜色只承载语义**：纸墨双色为主；链接=墨蓝，**琥珀=需注意**（"不可跨运行比较"
+ *      的标注、未参与判定的自检项）。不做装饰性用色。
+ *   3. **结构靠细线与编号**：标题由 CSS 计数器自动编号（与目录的编号呼应），细横线分层，
+ *      内容列左侧一条极细轴线——像图表的坐标轴。
+ *
+ * 分工（改文件前先读这三行）：**观感归本文件**；说什么归 `blocks.py`；HTML 骨架归 `html.py`。
+ * 「改样式顺手把结构也改了」是这类文件最常见的腐化方式。
+ *
+ * 硬约束：纯 CSS、零 JS、无外部资源、浅色+深色、打印友好、系统中文字体栈。
  */
 
-/* ---------------------------------------------------------------- 主题变量 */
+/* ================================================================ 设计令牌 */
 
 :root {
   color-scheme: light dark;
 
-  --fg: #1f2328;
-  --fg-muted: #656d76;
-  --bg: #ffffff;
-  --bg-subtle: #f6f8fa;
-  --border: #d8dee4;
-  --border-strong: #afb8c1;
-  --accent: #0969da;
-  --shadow: 0 1px 3px rgba(27, 31, 36, 0.12);
+  /* 纸墨 */
+  --paper: #fcfbf8;
+  --paper-sunk: #f4f2ec;
+  --ink: #1a1c1f;
+  --ink-soft: #5c6068;
+  --ink-faint: #8b9098;
+  --rule: #ddd9d0;
+  --rule-strong: #b9b4a8;
 
-  /* 中文正文的行高要比英文松一些，否则密不透气 */
-  --leading: 1.75;
-  --measure: 68rem;
+  /* 两个语义色，仅此二色 */
+  --link: #1b4f8f;
+  --signal: #b4530a;
+
+  /* 字体分工 */
+  --font-serif: "Songti SC", "SimSun", "Source Han Serif SC", "Noto Serif CJK SC",
+    "STSong", Georgia, serif;
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Hiragino Sans GB", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, "JetBrains Mono",
+    "Sarasa Mono SC", monospace;
+
+  /* 留白与节奏：8px 基准 */
+  --space: 8px;
+  /* 中文正文的行高要比英文松，否则密不透气 */
+  --leading: 1.8;
+  --measure: 62rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #e6edf3;
-    --fg-muted: #9198a1;
-    --bg: #0d1117;
-    --bg-subtle: #161b22;
-    --border: #30363d;
-    --border-strong: #484f58;
-    --accent: #4493f8;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --paper: #131416;
+    --paper-sunk: #1b1d20;
+    --ink: #e8e6e1;
+    --ink-soft: #a3a8b0;
+    --ink-faint: #767b83;
+    --rule: #2c2f34;
+    --rule-strong: #454a52;
+
+    --link: #7fb0e8;
+    --signal: #e8a061;
   }
 }
 
-/* ---------------------------------------------------------------- 基础排版 */
+/* ================================================================ 基础 */
 
 *,
 *::before,
@@ -47,113 +73,249 @@
   box-sizing: border-box;
 }
 
+html {
+  /* 锚点跳转时平滑滚动；减少动效偏好下由下面的 media 关掉 */
+  scroll-behavior: smooth;
+}
+
 body {
-  /* CJK 字体要显式列：默认字体栈里的拉丁字体没有汉字字形，会逐字回退到系统兜底 */
-  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC",
-    "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
-  font-size: 16px;
+  font-family: var(--font-sans);
+  font-size: clamp(15px, 0.55vw + 13px, 17px);
   line-height: var(--leading);
-  color: var(--fg);
-  background: var(--bg);
+  color: var(--ink);
+  background-color: var(--paper);
+  /* 左侧极细轴线：像图表的坐标轴，给正文一个"被测量过"的边框 */
+  background-image: linear-gradient(to right, var(--rule) 0 1px, transparent 1px);
+  background-repeat: no-repeat;
+  background-position: 1.75rem 0;
+  background-size: 1px 100%;
   max-width: var(--measure);
   margin: 0 auto;
-  padding: 2.5rem 1.25rem 6rem;
+  padding: calc(var(--space) * 6) calc(var(--space) * 5) calc(var(--space) * 10);
   -webkit-text-size-adjust: 100%;
 }
 
-h1,
-h2,
-h3,
-h4 {
-  line-height: 1.35;
-  margin: 2.2em 0 0.6em;
-  font-weight: 600;
-}
-
-h1 {
-  font-size: 1.85rem;
-  margin-top: 0;
-  padding-bottom: 0.45rem;
-  border-bottom: 1px solid var(--border);
-}
-
-/* 章节之间给一条分隔线：报告有八个章节，光靠留白分不清层级 */
-h2 {
-  font-size: 1.35rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid var(--border);
-}
-
-h3 {
-  font-size: 1.1rem;
-  color: var(--fg-muted);
-}
-
-/* 锚点跳转后标题不要被粘性表头顶住 */
-h1,
-h2,
-h3,
-h4,
-[id] {
-  scroll-margin-top: 1rem;
-}
-
 p {
-  margin: 0.85em 0;
+  margin: calc(var(--space) * 1.25) 0;
+  text-wrap: pretty;
 }
 
 a {
-  color: var(--accent);
-  text-decoration: none;
+  color: var(--link);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
 }
 
 a:hover {
-  text-decoration: underline;
+  text-decoration-thickness: 2px;
 }
 
-code {
-  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
-  font-size: 0.9em;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.1em 0.35em;
+:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* 等宽用于一切"数据与标识"：路径、版本、命令、字段名 */
+code,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--paper-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.05em 0.32em;
 }
 
 pre {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.85rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.65;
+  background: var(--paper-sunk);
+  border: 1px solid var(--rule);
+  border-left: 2px solid var(--rule-strong);
+  padding: calc(var(--space) * 1.25) calc(var(--space) * 1.5);
   overflow-x: auto;
 }
 
 pre code {
   background: none;
-  border: none;
+  border: 0;
   padding: 0;
 }
 
 ul,
 ol {
-  padding-left: 1.5em;
+  padding-left: 1.4em;
 }
 
 li {
-  margin: 0.35em 0;
+  margin: 0.3em 0;
 }
 
-/* ---------------------------------------------------------------- 表格 */
+hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: calc(var(--space) * 4) 0;
+}
 
-/* 96 行的对照表是这份报告的主体，读得动靠这三件事：粘性表头、斑马纹、紧凑留白 */
-table {
-  border-collapse: collapse;
+/* ================================================================ 标题与编号 */
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: calc(var(--space) * 4) 0 calc(var(--space) * 1.5);
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: clamp(1.7rem, 1.4vw + 1.3rem, 2.35rem);
+  margin-top: 0;
+  letter-spacing: -0.01em;
+}
+
+/* 顶级标题作为"记录抬头"：一条实线压在下面 */
+h1::after {
+  content: "";
+  display: block;
   width: 100%;
-  margin: 1.1rem 0 1.6rem;
-  font-size: 0.9rem;
-  /* 表很宽时允许横向滚动，而不是把页面撑破 */
+  height: 2px;
+  margin-top: calc(var(--space) * 1.5);
+  background: var(--ink);
+  opacity: 0.85;
+}
+
+/* 章节自动编号——与目录里已有的编号呼应，且不占标记 */
+body {
+  counter-reset: section;
+}
+
+h2 {
+  counter-increment: section;
+  counter-reset: subsection;
+  display: grid;
+  grid-template-columns: 2.6rem 1fr;
+  align-items: baseline;
+  gap: var(--space);
+  font-size: clamp(1.15rem, 0.5vw + 1rem, 1.4rem);
+  padding-top: calc(var(--space) * 2.5);
+  border-top: 1px solid var(--rule);
+}
+
+h2::before {
+  content: counter(section, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  letter-spacing: 0.02em;
+}
+
+h3 {
+  counter-increment: subsection;
+  display: grid;
+  grid-template-columns: 2.6rem 1fr;
+  align-items: baseline;
+  gap: var(--space);
+  font-size: 1.02rem;
+  color: var(--ink-soft);
+}
+
+h3::before {
+  content: counter(section, decimal-leading-zero) "." counter(subsection);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--ink-faint);
+}
+
+h4 {
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+}
+
+/* 目录里的标题不该再叠一层编号 */
+nav.toc h1,
+nav.toc h2,
+nav.toc h3 {
+  display: block;
+}
+
+/* 锚点跳转时标题不被粘性表头顶住 */
+h1,
+h2,
+h3,
+h4,
+[id] {
+  scroll-margin-top: calc(var(--space) * 2);
+}
+
+/* ================================================================ 目录 */
+
+nav.toc {
+  margin: calc(var(--space) * 3) 0 calc(var(--space) * 5);
+  padding: calc(var(--space) * 1.5) calc(var(--space) * 2);
+  background: var(--paper-sunk);
+  border: 1px solid var(--rule);
+  font-size: 0.92rem;
+}
+
+nav.toc > p {
+  margin: 0 0 calc(var(--space) * 0.75);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+nav.toc ol {
+  margin: 0;
+  padding-left: 1.6em;
+  columns: 2;
+  column-gap: calc(var(--space) * 3);
+}
+
+nav.toc li {
+  margin: 0.18em 0;
+  break-inside: avoid;
+  color: var(--ink-faint);
+}
+
+nav.toc li a {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+nav.toc li a:hover {
+  color: var(--link);
+  text-decoration: underline;
+}
+
+@media (max-width: 42rem) {
+  nav.toc ol {
+    columns: 1;
+  }
+}
+
+/* ================================================================ 表格：账簿式 */
+
+table {
+  /* 宽表允许横向滚动，而不是把页面撑破 */
   display: block;
   overflow-x: auto;
+  width: 100%;
+  margin: calc(var(--space) * 1.5) 0 calc(var(--space) * 3);
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  /* 数值等宽对齐：这一栏一栏的数字要能竖着对得上 */
+  font-variant-numeric: tabular-nums;
 }
 
 thead {
@@ -162,8 +324,10 @@ thead {
 
 th,
 td {
-  border: 1px solid var(--border);
-  padding: 0.35rem 0.6rem;
+  /* 去掉竖线，只留行向的细线——账簿的做法 */
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  padding: calc(var(--space) * 0.5) calc(var(--space) * 0.85);
   text-align: left;
   vertical-align: top;
   white-space: nowrap;
@@ -173,205 +337,234 @@ th {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg-subtle);
+  background: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
   font-weight: 600;
-  /* border-collapse 下粘性单元格的边框会被裁掉，用阴影补回底边 */
-  box-shadow: inset 0 -1px 0 var(--border-strong);
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  /* 记账表头与表体之间的一道硬线 */
+  box-shadow: inset 0 -2px 0 var(--rule-strong);
+}
+
+/* 第一列是"项/方案/适配器"这类标识：等宽更像记录 */
+td:first-child {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--ink-soft);
 }
 
 tbody tr:nth-child(even) {
-  background: var(--bg-subtle);
+  background: color-mix(in srgb, var(--paper-sunk) 55%, transparent);
 }
 
 tbody tr:hover {
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--link) 8%, transparent);
 }
 
-/* ---------------------------------------------------------------- 引用块（口径说明） */
+/* ================================================================ 引用块（口径说明） */
 
 blockquote {
-  margin: 1rem 0;
-  padding: 0.5rem 1rem;
-  border-left: 3px solid var(--border-strong);
-  background: var(--bg-subtle);
-  color: var(--fg-muted);
-  font-size: 0.95rem;
+  margin: calc(var(--space) * 2) 0;
+  padding: calc(var(--space) * 0.75) calc(var(--space) * 1.5);
+  border-left: 2px solid var(--signal);
+  background: color-mix(in srgb, var(--signal) 6%, transparent);
+  color: var(--ink-soft);
+  font-size: 0.92rem;
 }
 
 blockquote p {
   margin: 0.2em 0;
 }
 
-/* ---------------------------------------------------------------- 图表 */
+/* ================================================================ 图表 */
 
 img {
   display: block;
   max-width: 100%;
   height: auto;
-  margin: 1.2rem auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  margin: calc(var(--space) * 3) auto;
+  border: 1px solid var(--rule);
   background: #ffffff;
 }
 
-/* ---------------------------------------------------------------- 目录 */
-
-/* 由 html.py 从标题块生成，只出现在长报告页 */
-nav.toc {
-  margin: 1.5rem 0 2.5rem;
-  padding: 0.9rem 1.1rem;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 0.95rem;
-}
-
-nav.toc > p {
-  margin: 0 0 0.5rem;
-  font-weight: 600;
-  color: var(--fg-muted);
-}
-
-nav.toc ol {
-  margin: 0;
-  padding-left: 1.2em;
-  columns: 2;
-  column-gap: 2rem;
-}
-
-nav.toc li {
-  margin: 0.2em 0;
-  break-inside: avoid;
-}
-
-@media (max-width: 40rem) {
-  nav.toc ol {
-    columns: 1;
-  }
-}
-
-/* ---------------------------------------------------------------- 首页（版本卡片） */
+/* ================================================================ 首页：规格签 */
 
 .site-header {
-  margin-bottom: 2rem;
+  margin-bottom: calc(var(--space) * 4);
 }
 
 .site-header h1 {
-  font-size: 1.7rem;
+  font-size: clamp(1.5rem, 1.2vw + 1.15rem, 2rem);
 }
 
 .site-header p {
-  color: var(--fg-muted);
-  margin: 0.4rem 0 0;
+  margin: calc(var(--space) * 1.25) 0 0;
+  color: var(--ink-soft);
+  /* 不限宽：限到 46ch 时这句会在「测 / 量」之间断行，中文断字很扎眼 */
+  text-wrap: pretty;
 }
 
 .version-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
-  gap: 1rem;
-  margin: 1.5rem 0;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: calc(var(--space) * 2);
+  margin: calc(var(--space) * 3) 0;
 }
 
+/* 刻意不做"圆角卡片 + 左侧色条"（那是 AI 味的典型特征）：平直、细边框、等宽标识 */
 .version-card {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1rem 1.1rem;
-  background: var(--bg);
-  box-shadow: var(--shadow);
-  transition: border-color 0.15s ease;
+  border: 1px solid var(--rule);
+  border-top: 2px solid var(--ink);
+  padding: calc(var(--space) * 1.75) calc(var(--space) * 2);
+  background: var(--paper);
 }
 
 .version-card:hover {
-  border-color: var(--accent);
+  border-color: var(--rule-strong);
+  border-top-color: var(--link);
 }
 
 .version-card h2 {
-  font-size: 1.1rem;
-  margin: 0 0 0.5rem;
-  padding: 0;
+  display: block;
   border: 0;
+  padding: 0;
+  margin: 0 0 calc(var(--space) * 1.25);
+  font-family: var(--font-mono);
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-/* 事实按"标签 | 值"两列排，一条一行：inline 排法会让"失败单元 4"这类短语从中间折断 */
+.version-card h2::before {
+  content: none;
+}
+
 .version-card dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.15rem 0.6rem;
-  margin: 0 0 0.8rem;
-  font-size: 0.88rem;
-  color: var(--fg-muted);
+  gap: 0.15rem calc(var(--space) * 1.25);
+  margin: 0 0 calc(var(--space) * 1.5);
+  font-size: 0.85rem;
 }
 
 .version-card dt {
-  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
 }
 
 .version-card dd {
   margin: 0;
-}
-
-.version-card .actions a {
-  display: inline-block;
-  margin-right: 0.6rem;
-  font-size: 0.92rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
 }
 
 .badge {
   display: inline-block;
+  padding: 0.05em 0.5em;
+  border: 1px solid var(--signal);
+  color: var(--signal);
+  font-family: var(--font-mono);
   font-size: 0.78rem;
-  padding: 0.05rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  color: var(--fg-muted);
+  letter-spacing: 0.02em;
 }
 
 .badge.ok {
-  color: var(--accent);
-  border-color: currentColor;
+  border-color: var(--rule-strong);
+  color: var(--ink-soft);
+}
+
+.version-card .actions a {
+  margin-right: calc(var(--space) * 1.5);
+  font-size: 0.9rem;
 }
 
 .empty {
-  color: var(--fg-muted);
+  color: var(--ink-faint);
   font-style: italic;
 }
 
-/* ---------------------------------------------------------------- 打印 */
+/* ================================================================ 入场：一次，克制 */
 
-/* 让浏览器「打印为 PDF」也拿得出手——它与 reportlab 导的那份互补：
-   前者是网页观感，后者是排版精修 */
+/* 只有目录与首页卡片有入场——报告正文本身不做动画，读者是来看数的。
+ *
+ * **刻意不给目录项加逐项延迟**：延迟期间元素处于 `animation-fill-mode: both` 的起始态
+ * （`opacity: 0`），即"内容暂时不可见"。实测截图里就出现过目录只剩前两项、其余一片空——
+ * 动效的一点仪式感不值得拿"内容可能看不见"去换。整块一次入场即可。
+ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+nav.toc,
+.version-card {
+  animation: rise 0.3s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  nav.toc,
+  .version-card {
+    animation: none;
+  }
+}
+
+/* ================================================================ 打印 */
+
+/* 读者会把报告打成 PDF。这与 reportlab 那份互补：这份是网页观感，那份是排版精修。 */
 @media print {
   :root {
-    --fg: #000000;
-    --fg-muted: #444444;
-    --bg: #ffffff;
-    --bg-subtle: #f2f2f2;
+    --paper: #ffffff;
+    --paper-sunk: #f7f7f5;
+    --ink: #000000;
+    --ink-soft: #333333;
+    --ink-faint: #666666;
+    --rule: #cccccc;
+    --rule-strong: #000000;
+    --link: #000000;
+    --signal: #000000;
   }
 
   body {
     max-width: none;
     padding: 0;
+    background-image: none;
     font-size: 10.5pt;
   }
 
-  /* 目录在纸上无用（没有可点的链接），且占一页 */
+  /* 入场动效与打印无关；关掉以免任何实现把元素留在起始态（`both` 的 from 是 opacity: 0） */
+  nav.toc,
+  .version-card {
+    animation: none;
+  }
+
+  /* 纸上的目录没有可点的链接，且占一整页 */
   nav.toc {
     display: none;
   }
 
-  /* 标题不要孤立在页尾 */
+  /* 标题不孤立在页尾 */
   h1,
   h2,
   h3 {
     break-after: avoid;
   }
 
+  /* 表格与图不跨页断开；表头跨页重复 */
   table,
   blockquote,
   img {
     break-inside: avoid;
   }
 
-  /* 表头跨页重复 */
   thead {
     display: table-header-group;
   }
@@ -380,21 +573,26 @@ nav.toc li {
     break-inside: avoid;
   }
 
-  a {
-    color: inherit;
+  th {
+    position: static;
+    box-shadow: inset 0 -2px 0 var(--rule-strong);
   }
 
-  /* 打印时把链接目标写出来，否则纸上看不出链到哪 */
+  /* 把链接目标写出来，否则纸上看不出链到哪 */
   a[href^="http"]::after {
     content: " (" attr(href) ")";
-    font-size: 0.8em;
-    color: var(--fg-muted);
+    font-size: 0.78em;
+    color: var(--ink-faint);
     word-break: break-all;
   }
 
   .version-card {
-    box-shadow: none;
-    border: 1px solid var(--border);
+    border-top-color: #000000;
     break-inside: avoid;
+  }
+
+  h2::before,
+  h3::before {
+    color: #555555;
   }
 }
