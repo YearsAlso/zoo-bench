@@ -2,6 +2,9 @@
 
 三种格式（HTML 给站点、Markdown 可 diff、PDF 可分发）都从**同一份块列表**序列化，故数字必然
 一致——这是 design D11 的核心要求。图表也只生成一次：同一份 figure 出 SVG（站点）与 PNG（PDF）。
+
+**HTML 是 deck 形态**（见 :mod:`.deck`）：一页一个结论、数值以条形编码。它的文字同样取自块列表，
+条形取自模型的原始数值，故与另外两份同源。
 """
 
 from __future__ import annotations
@@ -9,10 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .assets import write_style
 from .blocks import build_blocks
 from .charts import render_all
-from .html import blocks_to_html
+from .deck import render_deck
 from .markdown import blocks_to_markdown
 from .pdf import render_pdf
 
@@ -36,15 +38,12 @@ def render(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> di
     directory.mkdir(parents=True, exist_ok=True)
     figures = directory / "figures"
 
-    # 样式表与页面同目录：页面用相对路径 `<link>` 引用它，故每个输出目录各带一份
-    write_style(directory)
-
     charts = render_all(model, figures, threshold=threshold)
     blocks = build_blocks(model, charts)
 
     html_path = directory / "index.html"
     markdown_path = directory / "report.md"
-    html_path.write_text(blocks_to_html(blocks), encoding="utf-8")
+    html_path.write_text(render_deck(model, blocks), encoding="utf-8")
     markdown_path.write_text(blocks_to_markdown(blocks), encoding="utf-8")
 
     # PDF 放在最后：字体解析失败时它是唯一会抛的环节，此时 HTML/Markdown 已写好、可先看

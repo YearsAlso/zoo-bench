@@ -38,6 +38,8 @@ class VersionCard:
     Attributes:
         slug: 版本目录名。
         report_href: 报告页的相对链接。
+        markdown_href: Markdown 全文的相对链接；没有导出过则为 None。**明细在这边**——deck 为
+            "一页一个结论"压缩了篇幅，逐单元数值留在全文里，故它不该是"要另外找"的东西。
         pdf_href: PDF 的相对链接；没有导出过则为 None。
         generated_at: 该轮测量的时间（UTC，已是可读字符串）。
         unit_count: 有效单元数。
@@ -47,6 +49,7 @@ class VersionCard:
 
     slug: str
     report_href: str
+    markdown_href: str | None
     pdf_href: str | None
     generated_at: str | None
     unit_count: int | None
@@ -148,10 +151,12 @@ def collect_cards(results_root: str | Path | None, site_dir: str | Path) -> list
             self_check_ok = bool(archived.get("self_check", {}).get("ok"))
 
         pdf = site / slug / "report.pdf"
+        markdown = site / slug / "report.md"
         cards.append(
             VersionCard(
                 slug=slug,
                 report_href=f"{slug}/{INDEX_FILENAME}",
+                markdown_href=f"{slug}/report.md" if markdown.is_file() else None,
                 pdf_href=f"{slug}/report.pdf" if pdf.is_file() else None,
                 generated_at=_format_epoch(run.get("started_at_epoch")),
                 unit_count=run.get("unit_count"),
@@ -177,6 +182,8 @@ def _card_html(card: VersionCard) -> str:
         facts.append(f'<dt>状态</dt><dd><span class="{css}">{label}</span></dd>')
 
     actions = [f'<a href="{card.report_href}">报告</a>']
+    if card.markdown_href:
+        actions.append(f'<a href="{card.markdown_href}">全文（Markdown）</a>')
     if card.pdf_href:
         actions.append(f'<a href="{card.pdf_href}">PDF</a>')
 

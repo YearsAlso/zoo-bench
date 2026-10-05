@@ -102,6 +102,7 @@ def _model(*, ratio: float = 0.26, command: str = "zoo-bench run") -> dict[str, 
                     "concurrency": 4,
                     "body_tier_us": 300.0,
                     "subject_median_seconds": 0.00035,
+                    "baseline_ratio_vs_subject": 0.8,
                     "gap": "bare_thread 比 zoo 快 1.25x",
                 }
             ],
@@ -143,19 +144,54 @@ def test_blocks_are_output_agnostic() -> None:
         assert "<" not in block.src
 
 
+def _html(model, charts=()):
+    """报告页已是 deck 形态；本模块测的是站点首页与对比页仍在用的块 -> HTML 序列化。"""
+    return html_renderer.blocks_to_html(blocks_module.build_blocks(model, list(charts)))
+
+
+def test_repository_relative_path_strips_the_build_machine() -> None:
+    """出处写仓库内相对路径，不写构建机的绝对路径。
+
+    本地是 ``F:\\...``、CI 是 ``/home/runner/...``，两种都只在写它的那台机器上有意义，而报告是
+    发到公开站点的。**三个格式共用同一个助手**——各写一份必然有人漏掉一处。
+    """
+    convert = blocks_module.repository_relative_path
+
+    assert (
+        convert(r"F:\Python\zoo\zoo-bench\results\zoo-framework-0.8.0\20260101T000000Z.json")
+        == "results/zoo-framework-0.8.0/20260101T000000Z.json"
+    )
+    assert (
+        convert("/home/runner/work/zoo-bench/zoo-bench/results/x.json") == "results/x.json"
+    )
+    # 路径里没有 results 段时**原样返回**：不编一个不存在的相对位置
+    assert convert("/tmp/data.json") == "/tmp/data.json"
+
+
+def test_full_text_uses_the_repository_relative_path_too() -> None:
+    """Markdown / PDF 那一侧同样要相对化——只有 deck 改了会让三个格式的出处对不上。"""
+    model = _model()
+    model["source"] = {"path": r"F:\build\zoo-bench\results\x.json"}
+
+    text = markdown_renderer.render_markdown(model, [])
+
+    assert "原始数据：`results/x.json`" in text
+    assert "F:\\" not in text
+
+
 # ------------------------------------------------------------------ HTML
 
 
 def test_html_contains_the_same_sections_as_markdown() -> None:
     model = _model()
-    html = html_renderer.render_html(model, [])
+    html = _html(model, [])
     for heading in ("运行环境", "负载", "结论摘要", "公开的不利数据", "口径局限与偏差来源"):
         assert heading in html
 
 
 def test_html_escapes_model_values() -> None:
     """报告里会出现用户可控的字符串（命令、包版本），必须转义——这是注入面。"""
-    html = html_renderer.render_html(_model(command="<script>alert(1)</script>"), [])
+    html = _html(_model(command="<script>alert(1)</script>"), [])
 
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
@@ -171,7 +207,7 @@ def test_inline_escapes_before_applying_markup() -> None:
 
 
 def test_html_renders_tables_images_and_bullets() -> None:
-    html = html_renderer.render_html(
+    html = _html(
         _model(),
         [{"figure": "f", "paths": {"svg": "/tmp/f.svg", "png": "/tmp/f.png"}, "scope": "范围"}],
     )
@@ -182,7 +218,7 @@ def test_html_renders_tables_images_and_bullets() -> None:
 
 
 def test_html_is_a_complete_document() -> None:
-    html = html_renderer.render_html(_model(), [])
+    html = _html(_model(), [])
     assert html.startswith("<!doctype html>")
     assert '<html lang="zh-CN">' in html
     assert '<meta charset="utf-8">' in html
@@ -202,8 +238,8 @@ def test_both_backends_read_the_same_model() -> None:
 
     markdown_low = markdown_renderer.render_markdown(low, [])
     markdown_high = markdown_renderer.render_markdown(high, [])
-    html_low = html_renderer.render_html(low, [])
-    html_high = html_renderer.render_html(high, [])
+    html_low = _html(low, [])
+    html_high = _html(high, [])
 
     assert "26.00%" in markdown_low and "99.00%" in markdown_high
     assert "26.00%" in html_low and "99.00%" in html_high

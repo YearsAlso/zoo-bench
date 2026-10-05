@@ -80,7 +80,8 @@ def _model() -> dict[str, Any]:
         "unfavorable": {
             "items": [
                 {"baseline": "bare_thread", "concurrency": 4, "body_tier_us": 300.0,
-                 "subject_median_seconds": 0.00035, "gap": "bare_thread 比 zoo 快 1.25x"}
+                 "subject_median_seconds": 0.00035, "baseline_ratio_vs_subject": 0.8,
+                 "gap": "bare_thread 比 zoo 快 1.25x"}
             ],
             "found": True,
             "note": "不利数据缺失的报告不合格",

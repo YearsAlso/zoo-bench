@@ -1,7 +1,10 @@
-"""HTML 序列化器。
+"""HTML 序列化器（站点与跨版本对比页用）。
 
 Pages 发布的是静态站点——Markdown 直接放上去会被当纯文本读，故站点用 HTML。内容同样**只来自**
-:mod:`.blocks`，与 Markdown、PDF 同源。
+:mod:`.blocks`。
+
+**报告页不走这里**：报告页是 deck 形态（见 :mod:`.deck`），一页一个结论、自足不引外部样式表。
+本模块服务的是站点首页与跨版本对比页——那两份仍是长文档。
 
 行内标记刻意只支持报告实际用到的那一点子集（``**粗体**`` 与 ``代码``），**不引 Markdown 库**：
 为了一小撮语法多一个依赖与一层行为不确定性不划算，而"到底支持哪些语法"写在这里比藏在库的
@@ -15,10 +18,9 @@ from __future__ import annotations
 
 import html as html_module
 import re
-from typing import Any
 
 from .assets import STYLE_FILENAME
-from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block, build_blocks
+from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block
 
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
@@ -135,10 +137,3 @@ def blocks_to_html(
             "",
         ]
     )
-
-
-def render_html(
-    model: dict[str, Any], charts: list[dict[str, Any]], *, figures_rel: str = "figures"
-) -> str:
-    """由报告模型渲染 HTML。"""
-    return blocks_to_html(build_blocks(model, charts, figures_rel=figures_rel))

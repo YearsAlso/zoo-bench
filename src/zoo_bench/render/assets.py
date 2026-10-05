@@ -11,11 +11,30 @@
 
 from __future__ import annotations
 
+from functools import cache
 from pathlib import Path
 
 STYLE_FILENAME = "style.css"
 
 _SOURCE = Path(__file__).resolve().parent / STYLE_FILENAME
+
+#: deck 的四份静态资产。**其中三份是"不可改"的框架块**（框架样式、导航、脚本）——它们原样
+#: 取自设计交付物，只做拼装、不重写：改了就没有语法高亮可 review，且与设计稿的对应关系断掉。
+#: `deck_slides.css` 是设计稿里标为"槽位"的逐页样式，本 deck 照用其全部类，也不再改。
+#: 四份都按 sha256 钉在 `tests/test_render_deck.py` 里。
+DECK_FRAMEWORK_CSS = "deck_framework.css"
+DECK_SLIDES_CSS = "deck_slides.css"
+DECK_CHROME_HTML = "deck_chrome.html"
+DECK_FRAMEWORK_JS = "deck_framework.js"
+
+
+@cache
+def deck_asset(filename: str) -> str:
+    """读一份 deck 静态资产。
+
+    **去掉末尾换行**：调用方各自决定与相邻片段的间隔，留一个换行会让模板里对齐的缩进错位。
+    """
+    return (Path(__file__).resolve().parent / filename).read_text(encoding="utf-8").rstrip("\n")
 
 
 def style_text() -> str:

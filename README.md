@@ -53,8 +53,11 @@ back to one generation's path and measures something the framework does not actu
 - **Relative numbers inside a single run are the evidence.** Absolute durations are labelled
   *not comparable across runs*, because CI runners are shared VMs and the drift is large enough to
   swamp a version difference.
-- Three formats, **one source**: HTML (site), Markdown (diffable), PDF (distributable) are all
-  serialized from the same block list, so they cannot disagree with each other.
+- Three formats, **one source**: the HTML page is a **deck** (1920x1080, one conclusion per slide,
+  values encoded as bars), Markdown is the diffable full text, PDF is the distributable document.
+  The deck's prose comes from the same block list as the other two and its bars from the same report
+  model, so the three cannot disagree — and the deck **keeps an explicit slide for the tiers where
+  this framework loses**, paginated in full rather than truncated to fit.
 - **The raw data is public**: `results/<framework-version>/<timestamp>.json` in this repository,
   containing **per-round samples** (not just aggregates), so the aggregation itself can be audited.
 - **Where the overhead goes** is itself a report dimension: per-task end-to-end split into four
@@ -174,8 +177,10 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
 
 - **同一次运行内的相对量才是证据。** 绝对耗时标注为*不可跨运行比较*——CI runner 是共享
   虚拟机，其漂移足以淹没版本差异。
-- 三种格式、**同一份来源**：HTML（站点）、Markdown（可 diff）、PDF（可分发）都从同一份块
-  列表序列化，故它们不可能互相矛盾。
+- 三种格式、**同一份来源**：HTML 页是 **deck**（1920x1080，一页一个结论，数值以条形编码），
+  Markdown 是可 diff 的全文，PDF 是可分发的文档。deck 的文字与另两份出自同一份块列表、条形出自
+  同一份报告模型，故三者不可能互相矛盾——且 deck **必有一页列出本框架输掉的档位**，分页续排到
+  底而不是为版面截断。
 - **原始数据是公开的**：本仓库的 `results/<框架版本>/<时间戳>.json`，含**逐轮原始样本**
   （不只是聚合值），所以聚合本身也可以被审计。
 - **开销花在哪**本身就是报告里的一个维度：每任务端到端拆成四段，并与各对照方案**逐段对照**。

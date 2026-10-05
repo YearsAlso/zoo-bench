@@ -63,18 +63,36 @@ def _model() -> dict[str, Any]:
 
 
 def test_stylesheet_ships_and_is_written_next_to_the_page(tmp_path: Path) -> None:
-    """样式表是独立文件、写在与页面同目录处，且页面**引用**它而不是内联。"""
+    """样式表是独立文件、写在与**引用它的页面**同目录处。
+
+    **报告页不在其列**：deck 是自足的（框架样式与逐页样式内联），因为它会被单独转发出去
+    （页脚 `.src` 的存在就是这个理由）——外链一份相对路径的样式表，转发出去就掉样式。
+    站点首页仍引用 ``style.css``，故它照旧是独立文件。
+    """
     assert assets.style_text().strip(), "样式表不能是空的"
 
-    outcome = report.render(_model(), tmp_path, threshold=0.15)
+    index_renderer.render(None, tmp_path)
     written = tmp_path / assets.STYLE_FILENAME
 
-    assert written.is_file(), "每个输出目录都应带一份 style.css（相对路径引用，不能跨目录）"
+    assert written.is_file(), "站点首页所在目录应带一份 style.css（相对路径引用，不能跨目录）"
     assert written.read_text(encoding="utf-8") == assets.style_text()
 
+    home = (tmp_path / index_renderer.INDEX_FILENAME).read_text(encoding="utf-8")
+    assert f'<link rel="stylesheet" href="{assets.STYLE_FILENAME}">' in home
+
+
+def test_report_page_is_self_contained(tmp_path: Path) -> None:
+    """报告页（deck）自足：样式内联、不引外部样式表。
+
+    这条守的是"能单独转发"这个性质——它一旦被改成外链，报告在就地看还是对的，只有转发出去
+    才掉样式，而那种问题没人会在 CI 里撞见。
+    """
+    outcome = report.render(_model(), tmp_path, threshold=0.15)
     page = Path(outcome["html"]).read_text(encoding="utf-8")
-    assert f'<link rel="stylesheet" href="{assets.STYLE_FILENAME}">' in page
-    assert "<style>" not in page, "引用外部样式表后不该再内联"
+
+    assert "<style>" in page, "deck 的框架样式与逐页样式都应内联"
+    assert '<link rel="stylesheet"' not in page, "deck 不该外链样式表"
+    assert not (tmp_path / assets.STYLE_FILENAME).is_file(), "报告目录不必再带一份站点样式表"
 
 
 def test_stylesheet_carries_the_requested_rules() -> None:
@@ -163,6 +181,29 @@ def test_index_shows_a_card_per_version_with_run_facts(tmp_path: Path) -> None:
     assert f'href="{slug}/index.html"' in page
     assert f'href="{slug}/report.pdf"' in page
     assert "2026-01-01" in page, "生成时间应来自留档的 started_at_epoch（UTC）"
+
+
+def test_index_links_the_markdown_full_text(tmp_path: Path) -> None:
+    """首页要能进到 Markdown 全文，而**没有全文时不凭空造链接**。
+
+    deck 为了"一页一个结论"压缩了篇幅，逐单元明细留在全文里；不给入口等于把它变成"要另外找"的
+    东西。反过来，还没导出全文的版本指过去就是死链。
+    """
+    results = tmp_path / "results"
+    site = tmp_path / "site"
+    slug = storage.framework_slug(FRAMEWORK)
+    _archive(results, {"started_at_epoch": 1767225600.0, "unit_count": 96})
+    (site / slug).mkdir(parents=True)
+    (site / slug / "index.html").write_text("x", encoding="utf-8")
+
+    without = index_renderer.render(results, site).read_text(encoding="utf-8")
+    assert f'href="{slug}/report.md"' not in without, "全文还没导出，不该有链接"
+
+    (site / slug / "report.md").write_text("# 报告", encoding="utf-8")
+    with_markdown = index_renderer.render(results, site).read_text(encoding="utf-8")
+
+    assert f'href="{slug}/report.md"' in with_markdown
+    assert "全文（Markdown）" in with_markdown, "链接要说清它是什么，不能只写“全文”"
 
 
 def test_index_omits_versions_whose_report_was_not_rendered(tmp_path: Path) -> None:
