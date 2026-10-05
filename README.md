@@ -128,9 +128,10 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
   groups are named, with the reason.
 - On CI this runs on a shared `ubuntu-latest` runner: relative comparisons hold, absolute numbers
   drift between runs.
-- Every push to `main` commits roughly **7.6 MB** of raw data to this repository (three targets,
-  ~2.6 MB each; the files are JSON, so git stores them compressed to roughly a quarter of that).
-- Any push to `main` — even docs-only — triggers a full ~13-minute measurement run.
+- Every push to `main` commits roughly **2.6 MB per measured target** (the files are JSON, so git
+  stores them compressed to roughly a quarter of that) — four targets is ~10 MB.
+- Any push to `main` — even docs-only — triggers a full measurement run whose length grows with the
+  number of targets (measured: 12.7 minutes for three).
 - **Git LFS is deliberately not used for `results/`.** The largest file is ~2.8 MB (GitHub's warning
   threshold is 50 MB), a push adds ~1.9 MB of compressed history, and LFS would make the raw data
   require tooling to read — the opposite of "publicly auditable". Revisit if the repo passes
@@ -239,9 +240,10 @@ openspec/changes/archive/   建立本仓库的那个变更：proposal / design D
   推迟的等待，拿它去减"墙钟 ÷ 并发度"没有意义——实测在 4 核 runner 上并发 64 时相减得
   −913.8%。端到端、吞吐与执行体自报值照旧留在报告里，被撤下的组会点出来并说明原因。
 - CI 跑在共享的 `ubuntu-latest` 上：相对比较成立，绝对数字逐轮漂移。
-- 每次推送到 `main` 会往本仓库提交约 **7.6 MB** 原始数据（三个目标、每个约 2.6 MB；内容是
+- 每次推送到 `main` 会按**每个被测目标约 2.6 MB** 提交原始数据（四个目标约 10 MB；内容是
   JSON，git 存进历史时约压到四分之一）。
-- 任何推送到 `main`（哪怕只改文档）都会触发一轮约 13 分钟的完整测量。
+- 任何推送到 `main`（哪怕只改文档）都会触发一轮完整测量，**时长随目标数增长**（三个目标时
+  实测 12.7 分钟）。
 - **`results/` 刻意不用 Git LFS。** 最大的文件约 2.8 MB（GitHub 的告警线是 50 MB），
   一次推送只给历史加约 1.9 MB 压缩后体积；而 LFS 会让原始数据变成**需要装工具才能读**——
   恰好与"公开可审计"相反。等仓库超过约 1 GB、或单份归档大到塞不进一次提交时再回来看。

@@ -29,6 +29,11 @@ frameworks:
   - "zoo-framework==0.6.0"
   # 适配器、语义探查均已按世代分流；这一条经全套用例通过后加入（见上方顺序纪律）
   - "zoo-framework==0.7.1b0"
+  # 0.8.0 经全套用例通过后加入：驱动面与 0.7.x 同代（**能力探测判定，不看版本号**），
+  # 故适配器无需改动
+  - "zoo-framework==0.8.0"
+  # dev 放在最后：**相邻配对决定对比页的配对**——这样生成的是「发布版→发布版」与
+  # 「最新发布→开发中」，而不是把开发中的东西夹在两个发布版之间
   - "zoo-framework @ git+https://github.com/YearsAlso/zoo-framework.git@dev"
 
 # 并发度档位
