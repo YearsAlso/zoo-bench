@@ -217,6 +217,12 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
         ),
         ("Python", f"{python.get('implementation')} {python.get('version')}"),
         ("解释器", str(python.get("executable"))),
+    ]
+    # GIL 状态只在自述里有值时展示（历史留档没有这一项，不能补造）；
+    # free-threaded 列的读数必须能被读者识别。
+    if python.get("gil_mode"):
+        rows.append(("GIL", str(python.get("gil_mode"))))
+    rows += [
         ("被测框架（发行元数据）", str(subject.get("dist_version"))),
         (
             "被测框架（模块 __version__）",
