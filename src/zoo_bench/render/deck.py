@@ -10,7 +10,8 @@ PDF 逐字一致；条形图取自模型里的**原始数值**——块的表格
 
 **框架块原样**（design D3）：``deck_framework.css`` / ``deck_chrome.html`` /
 ``deck_framework.js`` 只做拼装，不重写——它们是设计交付物，改了就没有语法高亮可 review，也与
-设计稿对不上了。
+设计稿对不上了。滚轮翻页与入场动画因而落在**追加层**（``_EXTRA_JS`` 与 ``_EXTRA_CSS`` 的末段），
+走框架自己留的 ``od:slide`` / ``od:slide-state`` 消息协议。
 """
 
 from __future__ import annotations
@@ -100,6 +101,83 @@ _EXTRA_CSS = """
        行盒装不下字形的上下沿，实测在核心结论页量到 25px 的内容落在盒子外（页面 overflow:hidden，
        也就是被裁掉）。故留出余量，不让它贴着边。 */
     .stat-num { line-height: 1.2; }
+
+    /* ── 入场动画（当前页被切到前台时逐项淡入）──────────────
+       初始态只挂在 **JS 加的类** `deck-anim` 上：渲染时不给任何元素写 opacity:0，故禁用
+       JavaScript 的读者看到的仍是完整内容，打印也不可能抓到初始态。 */
+    @keyframes deck-enter {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: none; }
+    }
+    .slide.active.deck-anim > * {
+      animation: deck-enter 420ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+    }
+    .slide.active.deck-anim > *:nth-child(1) { animation-delay: 0ms; }
+    .slide.active.deck-anim > *:nth-child(2) { animation-delay: 40ms; }
+    .slide.active.deck-anim > *:nth-child(3) { animation-delay: 80ms; }
+    .slide.active.deck-anim > *:nth-child(4) { animation-delay: 120ms; }
+    .slide.active.deck-anim > *:nth-child(n + 5) { animation-delay: 280ms; }
+
+    /* 打印与「减少动态效果」都必须**显式**把动画关掉：前者否则会抓到 opacity:0（那一页打出来
+       是空白），后者是无障碍要求。两条都不能指望"动画自己会跑完"。 */
+    @media print {
+      .slide > * { animation: none !important; opacity: 1 !important; transform: none !important; }
+      /* **这条是必需的，不是冗余**：屏幕规则 `.slide:not(.active) { display: none !important }`
+         比框架打印规则里的 `.slide { display: flex !important }` **更具体**，于是把后者压掉——
+         实测打印一趟 38 页的 deck 只出 1 页（当前页）。同具体度、并排在它之后即可胜出。 */
+      .slide:not(.active) { display: flex !important; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .slide > * { animation: none !important; }
+    }
+"""
+
+#: 追加在 vendored 框架脚本之后的交互层：滚轮翻页 + 入场动画。
+#:
+#: **不改框架脚本**：它标着 DO NOT EDIT、且被 sha256 钉在用例里。好在它自己留了扩展口——
+#: 监听 `window` 上的 `message` 收 `{type:'od:slide', action:...}` 来驱动翻页，并把
+#: `{type:'od:slide-state', active}` 广播到 `window.parent`（顶层文档时即自身）。故这里发消息
+#: 驱动它、收广播决定给哪一页挂动画。框架在自身 IIFE 里就 `paint()` 过一次，而 `message` 是
+#: 异步投递的——所以这段追加脚本跑完才收到那次广播，首屏同样有动画，不需要额外的初始化。
+_EXTRA_JS = """
+    (function () {
+      var THRESHOLD_PX = 24;   // 小于它的 deltaY 是触控板的惯性尾巴，忽略
+      var COOLDOWN_MS = 450;   // 一次手势会连发几十个 wheel 事件，不设冷却就会一划跳五页
+      var LINE_PX = 16;        // deltaMode === 1（行模式）时一行约合多少像素
+      var lastAt = 0;
+
+      function send(action) {
+        window.postMessage({ type: 'od:slide', protocolVersion: 1, action: action }, '*');
+      }
+
+      window.addEventListener('wheel', function (event) {
+        if (event.ctrlKey) return;   // Ctrl+滚轮是缩放，不该翻页
+        // **行模式必须换算**：Firefox 的 deltaY 只有几，不换算会被阈值全部挡掉，表现为
+        // "Firefox 上滚轮彻底失灵"。
+        var delta = event.deltaMode === 1 ? event.deltaY * LINE_PX : event.deltaY;
+        if (Math.abs(delta) < THRESHOLD_PX) return;
+        var now = Date.now();
+        if (now - lastAt < COOLDOWN_MS) return;
+        lastAt = now;
+        send(delta > 0 ? 'next' : 'prev');
+      }, { passive: true });   // 从不 preventDefault：不抢框架对点击的处理
+
+      var reduce = window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+
+      window.addEventListener('message', function (event) {
+        var data = event && event.data;
+        if (!data || data.type !== 'od:slide-state') return;
+        if (reduce) return;   // 声明减少动态效果：CSS 那层之外再加一道
+        var slide = slides[data.active];
+        if (!slide) return;
+        // 先移除、强制重排、再加：重复加同一个类不会重启动画，回到看过的页就不播了
+        slide.classList.remove('deck-anim');
+        void slide.offsetWidth;
+        slide.classList.add('deck-anim');
+      });
+    })();
 """
 
 
@@ -826,7 +904,9 @@ def _render_slide(slide: Slide, *, index: int) -> str:
     if slide.heading:
         # 标题里的换行渲染成 <br>：封面的「型号 / 评测名」两行就是这么来的
         heading = "<br>".join(inline(part) for part in slide.heading.split("\n"))
-        lines.append(f'<{slide.heading_tag} class="{slide.heading_class}">{heading}</{slide.heading_tag}>')
+        lines.append(
+            f'<{slide.heading_tag} class="{slide.heading_class}">{heading}</{slide.heading_tag}>'
+        )
     if slide.lead:
         lines.append(f'<p class="lead">{inline(slide.lead)}</p>')
     if slide.body:
@@ -870,6 +950,9 @@ def _assemble(slides: list[Slide], title: str) -> str:
             deck_asset(DECK_CHROME_HTML),
             "<script>",
             deck_asset(DECK_FRAMEWORK_JS),
+            "</script>",
+            "<script>",
+            _EXTRA_JS.strip("\n"),
             "</script>",
             "</body>",
             "</html>",

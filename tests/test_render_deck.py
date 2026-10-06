@@ -21,6 +21,7 @@ import pytest
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import deck as deck_module
 from zoo_bench.render import markdown as markdown_renderer
+from zoo_bench.render.assets import DECK_FRAMEWORK_JS, deck_asset
 
 #: 四份 vendor 资产的 sha256（**按行尾归一后的文本算**，见 :func:`_asset_digest`）。它们取自一次
 #: 设计交付物、且标着 DO NOT EDIT，故改动只应来自"换了一版设计稿"——那时连同这个哈希一起更新，
@@ -429,6 +430,97 @@ def test_disadvantage_count_matches_the_full_text() -> None:
 
     count = len(model["unfavorable"]["items"])
     assert f"在 {count} 个档位上更慢" in page
+
+
+# ------------------------------------------------------------------ 滚轮翻页与入场动画（追加层）
+
+
+def test_wheel_paging_lives_in_an_added_layer_not_in_the_framework() -> None:
+    """滚轮翻页必须在**追加**的脚本里，框架脚本一个字都不能动。
+
+    框架块是设计交付物、还被 sha256 钉着；把滚轮塞进去会同时毁掉"原样"与"可独立替换"两件事。
+    故这条两头都断：页面里有滚轮处理器，而 vendored 脚本里**没有** `wheel`。
+    """
+    page = _deck(_model())
+    framework = deck_asset(DECK_FRAMEWORK_JS)
+
+    assert "addEventListener('wheel'" in page
+    assert "wheel" not in framework, "框架脚本里出现了 wheel——那说明它被改写了"
+
+
+#: 极简 CSS 规则抽取：只取"选择器 { 声明 }"这一层。`@` 排除在外，故 at-rule 的前缀不会被当成
+#: 选择器；`from` / `to` 是关键帧内部的步骤名，另行排除。
+_CSS_RULE = re.compile(r"([^{}@]+)\{([^{}]*)\}", re.S)
+_KEYFRAME_STEPS = frozenset({"from", "to"})
+
+
+def _css_rules(page: str) -> list[tuple[str, str]]:
+    style = "".join(re.findall(r"<style>(.*?)</style>", page, re.S))
+    return [
+        (selector.strip(), declarations)
+        for selector, declarations in _CSS_RULE.findall(style)
+        if selector.strip() not in _KEYFRAME_STEPS
+    ]
+
+
+def test_animation_initial_state_hangs_on_a_javascript_only_class() -> None:
+    """动画的初始态必须挂在 **JS 才可能加的类** 上。
+
+    渲染时若让动画（或 `opacity: 0`）落在普通选择器上，禁用 JavaScript 的读者看到的是空白页
+    ——而这种错在开了 JS 的浏览器里永远看不见。
+
+    **判据是逐条规则查，不是查子串、也不是逐行查**：先前两版都不行——查子串时 `nth-child` 那几条
+    延时规则里也含 `.slide.active.deck-anim > *`；逐行查时选择器与声明不在同一行，会把合法的那条
+    也判成违规。两版都在注入违规实现时暴露了（前者漏判、后者误判）。
+    """
+    page = _deck(_model())
+
+    assert "from { opacity: 0; transform: translateY(12px); }" in page, "关键帧里该有初始态"
+    offenders = [
+        selector
+        for selector, declarations in _css_rules(page)
+        if ("deck-enter" in declarations or "opacity: 0;" in declarations)
+        and "deck-anim" not in selector
+    ]
+    assert not offenders, f"这些规则会让未启用 JavaScript 的读者看不到内容：{offenders}"
+
+
+def test_print_and_reduced_motion_explicitly_turn_the_animation_off() -> None:
+    """打印与「减少动态效果」都要**显式**关掉动画。
+
+    打印那条尤其要紧：`animation-fill-mode: both` 在动画尚未开始时呈现的正是初始态（opacity:0），
+    打印会抓到它——那一页打出来是空白。不能指望"动画自己会跑完"。
+    """
+    page = _deck(_model())
+
+    assert ".slide > * { animation: none !important; opacity: 1 !important; transform: none !important; }" in page
+    assert "@media (prefers-reduced-motion: reduce)" in page
+    assert ".slide > * { animation: none !important; }" in page
+
+
+def test_wheel_debounce_parameters_are_pinned() -> None:
+    """阈值、冷却与行模式换算都要在场。
+
+    冷却被"顺手删掉"不会让任何功能断言变红——只有触控板用户会撞到"一划跳五页"；行模式的换算
+    删掉则 Firefox 上滚轮彻底失灵（它的 `deltaY` 只有几，会被阈值全部挡掉）。两者都钉住。
+    """
+    page = _deck(_model())
+
+    assert "COOLDOWN_MS = 450" in page
+    assert "THRESHOLD_PX = 24" in page
+    assert "event.deltaMode === 1" in page
+
+
+def test_print_releases_the_slides_that_are_not_active() -> None:
+    """打印必须放开**非当前页**：不补这一条，一份 38 页的 deck 打印出来只有 1 页。
+
+    原因在选择器具体度：屏幕规则 `.slide:not(.active) { display: none !important }` 比框架打印
+    规则里的 `.slide { display: flex !important }` 更具体，后者因此失效——实测浏览器打印导出
+    只出当前那一页。故补一条同具体度、且排在其后的规则。
+    """
+    page = _deck(_model())
+
+    assert ".slide:not(.active) { display: flex !important; }" in page
 
 
 # ------------------------------------------------------------------ 溢出是硬失败，不是静默裁剪
