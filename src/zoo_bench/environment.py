@@ -43,6 +43,19 @@ def _distribution_version(name: str) -> str | None:
         return None
 
 
+def gil_mode() -> str:
+    """当前解释器的 GIL 状态（`align-execution-primitives` 任务组 6）。
+
+    free-threaded 构建（cp313t）上 `sys._is_gil_enabled()` 存在；`PYTHON_GIL=1`
+    仍会启用 GIL，故取**运行期实态**而不是只认构建。读数口径只允许
+    「同机同负载 default vs free-threaded」，跨机/跨列比较一律无效。
+    """
+    probe = getattr(sys, "_is_gil_enabled", None)
+    if probe is None:
+        return "default"
+    return "free-threaded" if not probe() else "default"
+
+
 def cpu_model() -> tuple[str | None, str]:
     """CPU 型号及其来源。
 
@@ -153,6 +166,8 @@ def collect(command: list[str] | None = None) -> dict[str, Any]:
             "version": platform.python_version(),
             "implementation": platform.python_implementation(),
             "executable": sys.executable,
+            "gil_mode": gil_mode(),
+            "abiflags": getattr(sys, "abiflags", ""),
         },
         "packages": {name: _distribution_version(name) for name in TRACKED_PACKAGES},
         "subject": _subject_identity(),

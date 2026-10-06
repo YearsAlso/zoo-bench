@@ -120,7 +120,79 @@ jobs:
             exit 1
           fi
 
+      # ------------------------------------------------------------------ free-threaded 列
+      #
+      # 框架仓库变更 align-execution-primitives 任务组 6：回答「同机同负载
+      # 3.13 vs 3.13t 的 zoo 端到端差」。判读门槛：中位收益 >=15% 才讨论
+      # 「把 3.13t 列为支持目标」，否则此列转长期观测。
+      #
+      # **只测矩阵里的 git 引用条目（@dev）**：已发布版本声明 gevent 依赖，
+      # 而 gevent/greenlet 在 free-threaded 构建上装不上，进矩阵必整列红。
+      # 目标清单经 `zoo-bench frameworks | grep ' @ '` 筛选得出，本文件仍不出现
+      # 任何框架版本字面量（与上方循环同一约定）。
+      #
+      # 留档走 results/gil-free/、报告走 site/<slug>-gil-free/：不与 3.13 列互盖。
+      # continue-on-error：runner 没有 3.13t 产物时不摧毁整条 Pages 流水线——
+      # 失败以橙色步骤如实可见，不造数据。
+
+      - name: 设置 free-threaded 解释器（3.13t）
+        continue-on-error: true
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13t"
+
+      - name: 安装 zoo-bench（free-threaded）
+        continue-on-error: true
+        run: |
+          set -u
+          # 框架先行：zoo-bench 声明 "zoo-framework"（不固定版本），harness 先装
+          # 会从 PyPI 拉 0.8.0 —— 它声明 gevent，在 3.13t 上装不上（本机实测）。
+          # 先装矩阵里的 git 引用条目（去 gevent 后的 dev），harness 依赖即被满足。
+          framework=$(grep -o '"zoo-framework @ [^"]*"' matrix.yaml | tr -d '"')
+          if [ -z "$framework" ]; then
+            echo "::warning::矩阵里没有 git 引用条目，跳过 free-threaded 列"
+            exit 1
+          fi
+          python -m pip install "$framework"
+          # wheel 边界（2026-10-06 本机 cp313t 实测）：最新 numpy/matplotlib/pillow
+          # 没有 free-threaded 产物时 pip 退回源码构建并失败；先钉到有产物的区间。
+          python -m pip install "numpy<2.5" "matplotlib<3.11" "pillow<12"
+          python -m pip install ".[dev]"
+
+      - name: 测量 free-threaded 列
+        continue-on-error: true
+        run: |
+          set -u
+          mkdir -p site
+          failed=""
+          while read -r framework; do
+            [ -n "$framework" ] || continue
+            echo "::group::测量（3.13t）$framework"
+
+            name=$(python -c \
+              "from zoo_bench.targets import parse_target; print(parse_target('''$framework''').name)")
+            python -m pip uninstall -y "$name" || true
+            python -m pip install "$framework"
+
+            slug=$(python -c \
+              "from zoo_bench.storage import framework_slug; print(framework_slug('''$framework'''))")
+
+            zoo-bench run --framework "$framework" --out results/gil-free \
+              || failed="$failed run-313t:$framework"
+            zoo-bench render --framework "$framework" --results results/gil-free \
+              --out "site/$slug-gil-free" || failed="$failed render-313t:$framework"
+
+            echo "::endgroup::"
+          done < <(zoo-bench frameworks | grep ' @ ' || true)
+
+          if [ -n "$failed" ]; then
+            echo "::warning::free-threaded 列未完成：$failed"
+            exit 1
+          fi
+
       - name: 写站点首页
+        # 放在 free-threaded 列之后：首页收录全部已生成的报告列（含 <slug>-gil-free），
+        # 否则新列的数据在留档里、却不在导航里。
         run: zoo-bench index --site site
 
       - name: 归档原始数据
