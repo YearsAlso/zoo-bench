@@ -19,6 +19,8 @@ from __future__ import annotations
 import html as html_module
 import re
 
+from ..i18n import HTML_LANGS, LANG_ZH, t
+from . import links
 from .assets import STYLE_FILENAME
 from .blocks import BULLETS, HEADING, IMAGE, NOTE, PARAGRAPH, TABLE, Block
 
@@ -26,7 +28,6 @@ _BOLD = re.compile(r"\*\*(.+?)\*\*")
 _CODE = re.compile(r"`([^`]+)`")
 _SLUG_UNSAFE = re.compile(r"[^\w一-鿿　-〿]+")
 
-TOC_TITLE = "本页内容"
 TOC_LEVEL = 2
 
 
@@ -70,29 +71,38 @@ def _image_html(block: Block) -> str:
     return f'<img src="{source}" alt="{alt}">'
 
 
-def _toc_html(entries: list[tuple[str, str]]) -> str:
+def _toc_html(entries: list[tuple[str, str]], *, title: str) -> str:
     if not entries:
         return ""
     items = "".join(f'<li><a href="#{anchor}">{inline(text)}</a></li>' for text, anchor in entries)
-    return f'<nav class="toc"><p>{TOC_TITLE}</p><ol>{items}</ol></nav>'
+    return f'<nav class="toc"><p>{title}</p><ol>{items}</ol></nav>'
 
 
 def blocks_to_html(
-    blocks: list[Block], *, title: str = "zoo-bench 性能报告", stylesheet: str = STYLE_FILENAME
+    blocks: list[Block],
+    *,
+    title: str | None = None,
+    stylesheet: str = STYLE_FILENAME,
+    lang: str = LANG_ZH,
+    language_switch: str | None = None,
 ) -> str:
     """把块列表序列化成一份完整的 HTML 文档。
 
     Args:
         blocks: :func:`zoo_bench.render.blocks.build_blocks` 的返回值。
-        title: 文档标题。
+        title: 文档标题；缺省由消息目录按语言给出。
         stylesheet: 样式表的相对路径；文档用 ``<link>`` 引用它。
+        lang: 文档语言——决定 ``<html lang>``、目录标题与缺省标题（design D2）。
+        language_switch: 语言切换链接的目标；给了就在页头放一个切换导航。
 
     Returns:
         完整的 HTML 文本。
     """
     taken: set[str] = set()
     anchors = {
-        index: slug(block.text, taken=taken) for index, block in enumerate(blocks) if block.kind == HEADING
+        index: slug(block.text, taken=taken)
+        for index, block in enumerate(blocks)
+        if block.kind == HEADING
     }
     toc = [
         (block.text, anchors[index])
@@ -101,13 +111,19 @@ def blocks_to_html(
     ]
 
     body: list[str] = []
+    if language_switch:
+        # 语言切换进页头：读者在页首就该看得到回家的路，而不是读完全文才发现有另一份
+        body.append(
+            f'<nav class="lang-switch"><a href="{html_module.escape(language_switch, quote=True)}">'
+            f"{inline(links.language_switch_label(lang))}</a></nav>"
+        )
     for index, block in enumerate(blocks):
         if block.kind == HEADING:
             level = min(block.level, 6)
             body.append(f'<h{level} id="{anchors[index]}">{inline(block.text)}</h{level}>')
             # 目录插在文档首个标题之后——放在最前面会与标题抢位置，放在末尾则没人看得到
             if block.level == 1:
-                body.append(_toc_html(toc))
+                body.append(_toc_html(toc, title=t("html.toc.title", lang)))
         elif block.kind == PARAGRAPH:
             body.append(f"<p>{inline(block.text)}</p>")
         elif block.kind == BULLETS:
@@ -123,11 +139,11 @@ def blocks_to_html(
     return "\n".join(
         [
             "<!doctype html>",
-            '<html lang="zh-CN">',
+            f'<html lang="{HTML_LANGS[lang]}">',
             "<head>",
             '<meta charset="utf-8">',
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
-            f"<title>{inline(title)}</title>",
+            f"<title>{inline(title if title is not None else t('html.default_title', lang))}</title>",
             f'<link rel="stylesheet" href="{html_module.escape(stylesheet, quote=True)}">',
             "</head>",
             "<body>",

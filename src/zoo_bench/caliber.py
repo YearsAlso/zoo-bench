@@ -23,12 +23,12 @@ from __future__ import annotations
 
 from typing import Any
 
-#: 撤下开销数字时给出的原因。报告与对比共用。
-UNINTERPRETABLE_REASON = (
-    "该并发度超过这次运行所在机器的并行能力：执行体自报的耗时里含超订带来的调度等待，"
-    "与「墙钟 / 并发度」不是同一件事，相减的结果没有意义（实测出现过负值）。"
-    "端到端、吞吐与执行体自报值仍然有效，故照旧给出。"
-)
+from .i18n import t
+
+
+def uninterpretable_reason(lang: str) -> str:
+    """撤下开销数字时给出的原因。报告与对比共用，故按语言取。"""
+    return t("caliber.uninterpretable_reason", lang)
 
 
 def logical_cores_from_environment(environment: dict[str, Any] | None) -> int | None:

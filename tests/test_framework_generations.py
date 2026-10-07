@@ -32,6 +32,7 @@ from zoo_bench.generations import (
     GenerationNotDrivable,
     probe_drive_generation,
 )
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.runner import UnitSpec, measure_matrix
 from zoo_bench.workloads.body import body_for_tier
@@ -62,7 +63,9 @@ def _environment_table_text(subject: dict[str, Any]) -> str:
     """把 ``subject`` 渲染成环境章节的表格文本（只走该章节，不牵动其余章节的模型键）。"""
     model = {"environment": {"subject": subject}}
     return "\n".join(
-        " ".join(row) for block in blocks_module._environment_blocks(model) for row in block.rows
+        " ".join(row)
+        for block in blocks_module._environment_blocks(model, lang=LANG_ZH)
+        for row in block.rows
     )
 
 
@@ -88,8 +91,7 @@ def test_probe_names_every_capability_it_examined() -> None:
         observed = item["observed"]
         assert observed.strip(), f"{item['capability']} 没有给出形态说明"
         assert observed not in {"True", "False"}, (
-            f"{item['capability']} 的形态说明是布尔值——"
-            "世代判定失败时它答不出「探测到的形态是什么」"
+            f"{item['capability']} 的形态说明是布尔值——世代判定失败时它答不出「探测到的形态是什么」"
         )
 
 
@@ -164,7 +166,11 @@ def test_a_failed_unit_carries_no_measurement_data(monkeypatch: pytest.MonkeyPat
         del kwargs
         if kind == "measure":
             return {"status": "failed", "error": "驱动面无法识别", "stderr": "探测到的形态：..."}
-        return {"status": "ok", "child_elapsed_seconds": 0.0, "payload": {"ok": True, "results": {}}}
+        return {
+            "status": "ok",
+            "child_elapsed_seconds": 0.0,
+            "payload": {"ok": True, "results": {}},
+        }
 
     monkeypatch.setattr(runner, "run_in_child", failing_child)
 
@@ -189,7 +195,7 @@ def test_a_failed_unit_carries_no_measurement_data(monkeypatch: pytest.MonkeyPat
 
     from zoo_bench.report import build_model
 
-    assert build_model(result)["subject"] is None, "被测对象不该出现在报告的数据里"
+    assert build_model(result, lang=LANG_ZH)["subject"] is None, "被测对象不该出现在报告的数据里"
 
 
 # --------------------------------------------------------------------------- 自述
@@ -221,7 +227,13 @@ def test_environment_section_renders_the_drive_generation() -> None:
 def test_unprobed_drive_generation_is_reported_as_such() -> None:
     """探测失败如实记为不可用，**不猜一代**——自述的可信度全在这一点上。"""
     rendered = _environment_table_text(
-        {"drive_generation": {"generation": None, "label": None, "error": "ImportError: 没有这个包"}}
+        {
+            "drive_generation": {
+                "generation": None,
+                "label": None,
+                "error": "ImportError: 没有这个包",
+            }
+        }
     )
     assert "无法判定" in rendered
     assert "ImportError" in rendered, "只说无法判定、不说为什么，等于没说"

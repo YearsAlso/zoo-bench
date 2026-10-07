@@ -305,6 +305,9 @@ def test_external_adapter_needs_no_change_inside_the_package(
     (tmp_path / f"{EXTERNAL_MODULE}.py").write_text(_EXTERNAL_SOURCE, encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
 
+    # 注册表是进程级单例：探针的登记若不随用例撤走，会残留在后续按注册表取名单的用例里
+    monkeypatch.setattr(registry, "_REGISTRY", dict(registry._REGISTRY))
+
     loaded, skipped = registry.load_external([EXTERNAL_MODULE])
     assert loaded == [EXTERNAL_MODULE]
     assert skipped == []
@@ -365,4 +368,6 @@ def test_incomparable_adapter_declares_itself_as_such() -> None:
     }
     assert declared["comparable"] == "False"
     assert declared["tier"] == "Tier.ECOSYSTEM"
-    assert "不可直接对标" in declared["notes"]
+    # 6.1 键化后 notes 存目录键（design D8）：这里钉键名，两种语言的文案由 i18n 完整性
+    # 与双语产物用例负责
+    assert ast.literal_eval(declared["notes"]) == "adapters.notes.celery_pool"

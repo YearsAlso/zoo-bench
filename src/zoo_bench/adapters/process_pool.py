@@ -20,7 +20,7 @@ class ProcessPoolAdapter(BaseAdapter):
 
     name = "process_pool"
     tier = Tier.STDLIB
-    notes = "ProcessPoolExecutor：执行体与返回值跨进程序列化的成本计入端到端，与多线程档位不可直接等价比较"
+    notes = "adapters.notes.process_pool"
 
     def setup(self, *, workers: int) -> None:
         self._pool = ProcessPoolExecutor(max_workers=workers)

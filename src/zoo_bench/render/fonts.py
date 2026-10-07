@@ -207,8 +207,7 @@ def find_cjk_font_covering(text: str, candidates: list[str] | None = None) -> Pa
         gaps[path] = missing
 
     raise CjkFontUnavailable(
-        "候选字体都存在，但没有一个覆盖报告要渲染的全部字符。"
-        f"缺失情况：{gaps}\n{_INSTALL_HINT}"
+        f"候选字体都存在，但没有一个覆盖报告要渲染的全部字符。缺失情况：{gaps}\n{_INSTALL_HINT}"
     )
 
 

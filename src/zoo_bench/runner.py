@@ -55,9 +55,13 @@ OVERHEAD_TIER_RATIO_LIMIT = 5.0
 #: 判别信号。
 BODY_DEVIATION_TOLERANCE = 0.6
 
+# 边界（design D8）：本模块写进留档的自述字段——ABSOLUTE_NOTE、自检/分档 note、相对比注记、
+# 归因 note——存 i18n 目录键，留档因此语言无关，渲染层经 resolve_text 按语言解析（旧档散文
+# 原样透传）。其余中文字符串（子进程 stderr、CLI 问题清单）不进报告，保持中文原样
+# （report.py 消费 conclusions/crossings/turnings 时用自己的目录键，不取这里的中文）。
 #: 绝对耗时数字的固定标注。措辞刻意直白：CI runner 是共享虚拟机，跨运行引用这些数字
 #: 一句话就能被否（design D6）。
-ABSOLUTE_NOTE = "仅在同一次运行内部有效，不可跨运行比较"
+ABSOLUTE_NOTE = "report.absolute_note"
 
 
 @dataclass(frozen=True)
@@ -228,7 +232,7 @@ def check_overhead_across_tiers(units: list[dict[str, Any]]) -> dict[str, Any]:
                     "overheads_seconds": overheads,
                     "growth": None,
                     "ok": True,
-                    "note": "最短档开销非正，比值判据不适用，已记录原始值供人工判读",
+                    "note": "runner.self_check.overhead_nonpositive",
                 }
             )
             continue
@@ -237,10 +241,7 @@ def check_overhead_across_tiers(units: list[dict[str, Any]]) -> dict[str, Any]:
         ok = growth <= OVERHEAD_TIER_RATIO_LIMIT
         note = ""
         if not gated and not ok:
-            note = (
-                "并发度高于最低档：端到端里含排队等待，除以并发度得到的每任务开销随之上升——"
-                "那是排队不是成本错算，故不参与判定（原值已如实记录）"
-            )
+            note = "runner.self_check.overhead_polluted"
         checks.append(
             {
                 "adapter": adapter,
@@ -254,7 +255,11 @@ def check_overhead_across_tiers(units: list[dict[str, Any]]) -> dict[str, Any]:
             }
         )
 
-    return {"checks": checks, "gated_concurrency": lowest, "ok": all(c["ok"] for c in checks if c["gated"])}
+    return {
+        "checks": checks,
+        "gated_concurrency": lowest,
+        "ok": all(c["ok"] for c in checks if c["gated"]),
+    }
 
 
 def queueing_contaminated_groups(self_check: dict[str, Any]) -> list[dict[str, Any]]:
@@ -279,7 +284,9 @@ def check_process_isolation(units: list[dict[str, Any]]) -> dict[str, Any]:
     """每个测量单元都跑在各自独立的子进程里（design D4）。"""
     parent_pid = os.getpid()
     child_pids = [
-        int(unit["process"]["pid"]) for unit in units if unit["status"] == "ok" and "process" in unit
+        int(unit["process"]["pid"])
+        for unit in units
+        if unit["status"] == "ok" and "process" in unit
     ]
 
     return {
@@ -335,12 +342,12 @@ def _relative_block(units: list[dict[str, Any]]) -> dict[str, Any]:
                 "subject_median_seconds": subject_median,
                 "ratios_vs_subject": ratios,
                 "excluded_incomparable": excluded,
-                "note": "比值 >1 表示该对照方案比被测框架慢；仅在同一次运行内成立",
+                "note": "runner.relative.comparison_note",
             }
         )
 
     return {
-        "note": "同一次运行内的相对比，是选型证据的主体；对本次运行的整体漂移不敏感",
+        "note": "runner.relative.note",
         "comparisons": comparisons,
     }
 
@@ -392,11 +399,9 @@ def grade_body_deviation(units: list[dict[str, Any]]) -> dict[str, Any]:
 
         if not check["gated"] and not check["body_deviation_ok"]:
             check["note"] = (
-                "并发度高于最低档：墙钟受调度推迟影响，偏差随并发度增长说明是环境超订而非"
-                "校准错误（原值已如实记录）"
+                "runner.self_check.body_oversubscribed"
                 if check["concurrency"] != lowest
-                else "档位过短：几十微秒的窗口在共享 runner 上受调度颗粒度支配，不足以判定"
-                "（原值已如实记录）"
+                else "runner.self_check.body_too_short"
             )
         checks.append(check)
 
@@ -487,21 +492,14 @@ def _run_attribution(specs: list[UnitSpec]) -> dict[str, Any]:
         "concurrencies": sorted({spec["concurrency"] for spec in planned}),
         "groups": groups,
         "over_subscribed_concurrencies": over_subscribed,
-        "note": (
-            "本维度是**诊断**不是主证据：抽样的档位与并发度固定为一小批，不覆盖矩阵里的全部单元。"
-            "并发度上界取机器的并行能力——超过它时量到的是争用；"
-            + (
-                f"本轮机器并行能力低于矩阵里最低的并发度，故 {over_subscribed} 仍是在超订下量的。"
-                if over_subscribed
-                else ""
-            )
-        ),
+        "note": [
+            "report.attribution.diagnosis_note",
+            *(["report.attribution.oversubscribed_note"] if over_subscribed else []),
+        ],
     }
 
 
-def _run_self_check(
-    units: list[dict[str, Any]], verification: dict[str, Any]
-) -> dict[str, Any]:
+def _run_self_check(units: list[dict[str, Any]], verification: dict[str, Any]) -> dict[str, Any]:
     """汇总三类自检（spec: measurement-protocol 的"测量过程自身 MUST 被自检"）。"""
     body = grade_body_deviation(units)
     overhead = check_overhead_across_tiers(units)
@@ -603,7 +601,6 @@ def measure_matrix(
         else:
             # 探查失败本身要如实记录，不能让它看起来像"这一维度不存在"
             semantics = {
-                "title": "调度语义的代价",
                 "status": "probe_failed",
                 "error": outcome.get("error", ""),
                 "stderr": outcome.get("stderr", ""),

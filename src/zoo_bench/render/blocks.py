@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from ..i18n import LANG_EN, LANG_ZH, MESSAGES, has_translation, t, template_fields
 
 HEADING = "heading"
 PARAGRAPH = "paragraph"
@@ -28,13 +31,28 @@ TABLE = "table"
 IMAGE = "image"
 NOTE = "note"
 
+
 #: 几个章节标题按**身份**被 deck 渲染器识别（deck 少一页正是最难被发现的那种错）。
 #: 放在这里而不是各写一份字符串：改名时两边一起变，识别失败还会被用例拦下。
-CONCLUSION_SECTION_TITLE = "结论摘要"
-CHART_SECTION_TITLE = "图表"
-DIMENSION_SECTION_PREFIX = "维度："
-APPENDIX_SECTION_PREFIX = "附录："
-UNFAVORABLE_SECTION_TITLE = "公开的不利数据"
+def conclusion_section_title(lang: str) -> str:
+    return t("blocks.section.conclusion", lang)
+
+
+def chart_section_title(lang: str) -> str:
+    return t("blocks.section.charts", lang)
+
+
+def dimension_section_prefix(lang: str) -> str:
+    return t("blocks.section.dimension_prefix", lang)
+
+
+def appendix_section_prefix(lang: str) -> str:
+    return t("blocks.section.appendix_prefix", lang)
+
+
+def unfavorable_section_title(lang: str) -> str:
+    return t("blocks.section.unfavourable", lang)
+
 
 #: 中文字体普遍具备的非 ASCII 排版字符：中文标点、引号、破折号与全角符号。
 #:
@@ -83,12 +101,41 @@ def unsafe_characters(text: str) -> list[str]:
     return sorted({character for character in text if not _is_safe(character)})
 
 
-def assert_report_text_is_renderable(text: str) -> None:
-    """报告正文只使用中文字体可靠具备的字符。
+def assert_report_text_is_renderable(text: str, *, lang: str, source: str = "") -> None:
+    """报告正文只使用该语言所选规则的可靠字符（design D6）。
+
+    中文走 :func:`unsafe_characters` 的字体覆盖白名单；英文正文必须**全 ASCII**——那张白名单
+    本是按中文字体覆盖逐字试出来的，把 ASCII 之外的字交给英文产物等于把方框风险重新引进来。
+
+    违规时指出**具体条目**：光列码位读者无从知道是哪一条、也就无从修，故调用方应把 ``text``
+    切成条目粒度并给出 ``source``（见 :func:`zoo_bench.render.pdf.report_text_units`）。
+
+    Args:
+        text: 要检查的文本（**一条**，不是整篇拼起来的）。
+        lang: 产物语言。
+        source: 该文本在报告里的位置（如 ``口径局限 / 条目 3``），失败时原样报出。
 
     Raises:
-        UnsafeReportText: 出现非常规符号，并逐字给出可替换的建议。
+        UnsafeReportText: 出现该语言规则不允许的字符，并给出可执行的替换建议。
     """
+    where = f"\n出现位置：{source}" if source else ""
+
+    if lang == LANG_EN:
+        if text.isascii():
+            return
+        offenders = sorted({character for character in text if not character.isascii()})
+        listed = "、".join(f"U+{ord(c):04X}" for c in offenders[:6])
+        if len(offenders) > 6:
+            listed += f" 等 {len(offenders)} 种"
+        at = min(text.find(character) for character in offenders)
+        snippet = text[max(0, at - 40) : at + 40].replace("\n", " ")
+        raise UnsafeReportText(
+            f"英文产物正文含非 ASCII 字符：{listed}{where}\n原文：…{snippet}…\n"
+            "英文正文的字符规则是全 ASCII（design D6）。若它来自目录里的文案，去补那条译文；"
+            "若它来自留档数据（机器自述、旧档散文），那是「数据本身如此」，需在渲染前单独处置"
+            "而不是放宽规则。"
+        )
+
     unsafe = unsafe_characters(text)
     if not unsafe:
         return
@@ -108,7 +155,7 @@ def assert_report_text_is_renderable(text: str) -> None:
         for character in unsafe
     )
     raise UnsafeReportText(
-        f"报告正文里出现了中文字体不一定有的字符：{detail}"
+        f"报告正文里出现了中文字体不一定有的字符：{detail}{where}"
         "\n缺字只会变成方框、文件照样生成，故在导出前拦下。请改用 ASCII 写法或中文词。"
     )
 
@@ -137,7 +184,7 @@ class Block:
     src: str = ""
 
 
-def format_seconds(value: float | None) -> str:
+def format_seconds(value: float | None, lang: str) -> str:
     """秒 -> 便于阅读的单位。报告同时给数值与单位，省去读者换算。
 
     **单位写中文（微秒）而不是 `微秒`**：`微秒` 是中文字体不保证有的字符——实测 SimHei 就缺它，
@@ -145,17 +192,17 @@ def format_seconds(value: float | None) -> str:
     否则会出现"2.7 毫秒被印成 0.003 ms"这种差 1000 倍的错误。
     """
     if value is None:
-        return "—"
+        return t("blocks.empty_marker", lang)
     if value >= 1.0:
-        return f"{value:.3f} 秒"
+        return f"{value:.3f} {t('unit.seconds', lang)}"
     if value >= 1e-3:
-        return f"{value * 1e3:.3f} 毫秒"
-    return f"{value * 1e6:.2f} 微秒"
+        return f"{value * 1e3:.3f} {t('unit.milliseconds', lang)}"
+    return f"{value * 1e6:.2f} {t('unit.microseconds', lang)}"
 
 
-def format_ratio(value: float | None) -> str:
+def format_ratio(value: float | None, lang: str) -> str:
     """比值 -> 百分比。"""
-    return "—" if value is None else f"{value * 100:.2f}%"
+    return t("blocks.empty_marker", lang) if value is None else f"{value * 100:.2f}%"
 
 
 def repository_relative_path(path: str) -> str:
@@ -174,29 +221,98 @@ def repository_relative_path(path: str) -> str:
     return "/".join(parts[start:])
 
 
+def _list_join(values: Iterable[Any], lang: str, *, clause: bool = False) -> str:
+    """按语言拼一列值：中文枚举用顿号、句子级用分号；英文一律逗号/分号。
+
+    拼接发生在**调用侧**而不是目录里：目录只收已经拼好的整体（如 ``{seals}``），
+    否则分隔符就得进模板、每种语言各写一份。
+    """
+    if clause:
+        return "；".join(values) if lang == LANG_ZH else "; ".join(values)
+    return "、".join(values) if lang == LANG_ZH else ", ".join(values)
+
+
+def resolve_params(params: dict[str, Any] | None, lang: str) -> dict[str, Any]:
+    """键值参数里的**嵌套键**再解一层（旧留档没有键值参数，逐项透传不受影响）。
+
+    **数字原样留着、不得转成字符串**：模板里有 ``{observed:.4f}`` 这类格式说明，转成字符串
+    会让 ``str.format`` 抛 ``Unknown format code 'f' for object of type 'str'``。实测被这一处
+    卡住过一次——旧留档存的是散文、参数根本走不到，故只在**新留档**上才暴露。
+    """
+    if not params:
+        return {}
+    resolved: dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, str) and has_translation(value):
+            resolved[key] = t(value, lang)
+        elif isinstance(value, (list, tuple)):
+            resolved[key] = _list_join(
+                (resolve_text(item, lang) for item in value), lang, clause=True
+            )
+        elif isinstance(value, dict):
+            resolved[key] = resolve_params(value, lang)
+        else:
+            resolved[key] = value
+    return resolved
+
+
+def resolve_text(value: Any, lang: str, params: dict[str, Any] | None = None) -> str:
+    """按语言解析一个「键或散文」值：目录键取译文，旧留档散文**原样透传**。
+
+    键值数据（design D8）里嵌套的键（如证据参数里的 ``location``）经 ``params`` 一并解析；
+    模板没声明的参数**过滤掉**（留档可能携带模板已不再使用的参数），模板要的参数缺失则照常抛。
+    列表按句拼（分号）。
+    """
+    if isinstance(value, str):
+        if not has_translation(value):
+            return value
+        fields = template_fields(next(iter(MESSAGES[value].values())))
+        used = {k: v for k, v in resolve_params(params, lang).items() if k in fields}
+        return t(value, lang, **used)
+    if isinstance(value, (list, tuple)):
+        return _list_join((resolve_text(item, lang, params) for item in value), lang, clause=True)
+    return str(value)
+
+
 def _heading(text: str, level: int = 2) -> Block:
     return Block(HEADING, text=text, level=level)
 
 
-def _drive_generation_text(subject: dict[str, Any]) -> str:
+def _drive_generation_text(subject: dict[str, Any], lang: str) -> str:
     """被测框架的驱动面世代，**记不清就如实说记不清**。
 
     世代判定失败时给的是探测结果（见 :func:`zoo_bench.adapters.zoo.probe_drive_generation`），
     不是一句"未知"——"未知"和"探测到的是这样"在排查时是完全不同的两条信息。
+
+    ``label`` 与 ``error`` 都是**留档里的值**：新档存的是目录键、旧档存的是散文，一律经
+    :func:`resolve_text`；判定载荷（``error_params``，只有新档才有）的排版归
+    :mod:`zoo_bench.generations`，本模块只负责把它交给该语言的模板。
     """
     generation = subject.get("drive_generation") or {}
     label = generation.get("label")
     if label:
-        return str(label)
-    return f"无法判定（{generation.get('error') or '自述里没有这一项'}）"
+        return resolve_text(label, lang)
+
+    error = generation.get("error")
+    if not error:
+        detail = t("blocks.env.drive_generation_not_declared", lang)
+    elif generation.get("error_params"):
+        # 只在真出现键化载荷时才导入：generations 依赖被测框架，而渲染旧档/无框架的场景
+        # 不该被它牵连（旧档的 error 是散文，走下面一支）
+        from ..generations import format_mismatch
+
+        detail = format_mismatch(generation["error_params"], lang)
+    else:
+        detail = str(error)
+    return t("blocks.env.drive_generation_undetermined", lang, detail=detail)
 
 
-def _environment_blocks(model: dict[str, Any]) -> list[Block]:
+def _environment_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     environment = model.get("environment")
     if environment is None:
         return [
-            _heading("运行环境"),
-            Block(PARAGRAPH, text="**本报告缺少环境自述，不应被发布。**"),
+            _heading(t("blocks.env.title", lang)),
+            Block(PARAGRAPH, text=t("blocks.env.missing", lang)),
         ]
 
     hardware = environment.get("hardware", {})
@@ -205,30 +321,49 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
     subject = environment.get("subject", {})
     harness = environment.get("harness", {})
 
-    cpu = hardware.get("cpu_model") or f"不可用（{hardware.get('cpu_model_source')}）"
-    rows: list[tuple[str, str]] = [
-        ("CPU 型号", str(cpu)),
-        ("逻辑核数", str(hardware.get("logical_cores"))),
-        ("平台", str(hardware.get("platform"))),
-        (
-            "操作系统",
-            f"{operating_system.get('system')} {operating_system.get('release')}"
-            f"（{operating_system.get('version')}）",
+    cpu = hardware.get("cpu_model") or t(
+        "blocks.env.cpu_unavailable",
+        lang,
+        source=resolve_text(
+            str(hardware.get("cpu_model_source", "")),
+            lang,
+            hardware.get("cpu_model_source_params") or {},
         ),
-        ("Python", f"{python.get('implementation')} {python.get('version')}"),
-        ("解释器", str(python.get("executable"))),
+    )
+    rows: list[tuple[str, str]] = [
+        (t("blocks.env.cpu_model", lang), str(cpu)),
+        (t("blocks.env.logical_cores", lang), str(hardware.get("logical_cores"))),
+        (t("blocks.env.platform", lang), str(hardware.get("platform"))),
+        (
+            t("blocks.env.os", lang),
+            t(
+                "blocks.env.os_value",
+                lang,
+                system=operating_system.get("system"),
+                release=operating_system.get("release"),
+                version=operating_system.get("version"),
+            ),
+        ),
+        (
+            t("blocks.env.python_label", lang),
+            f"{python.get('implementation')} {python.get('version')}",
+        ),
+        (t("blocks.env.interpreter", lang), str(python.get("executable"))),
     ]
     # GIL 状态只在自述里有值时展示（历史留档没有这一项，不能补造）；
     # free-threaded 列的读数必须能被读者识别。
     if python.get("gil_mode"):
-        rows.append(("GIL", str(python.get("gil_mode"))))
+        rows.append((t("blocks.env.gil_label", lang), str(python.get("gil_mode"))))
     rows += [
-        ("被测框架（发行元数据）", str(subject.get("dist_version"))),
+        (t("blocks.env.subject_dist", lang), str(subject.get("dist_version"))),
         (
-            "被测框架（模块 __version__）",
-            f"{subject.get('module_version')}（仅附注，不作版本判据）",
+            t("blocks.env.subject_module", lang),
+            f"{subject.get('module_version')}{t('blocks.env.module_note', lang)}",
         ),
-        ("被测框架的驱动面世代", _drive_generation_text(subject)),
+        (
+            t("blocks.env.drive_generation_label", lang),
+            _drive_generation_text(subject, lang),
+        ),
     ]
 
     # git 安装时把来源与 commit 摆出来：分支安装的版本号只是仓库里写着的声明值，
@@ -237,41 +372,53 @@ def _environment_blocks(model: dict[str, Any]) -> list[Block]:
     if vcs:
         rows += [
             (
-                "安装来源",
-                f"{vcs.get('vcs', 'vcs')} 的 {vcs.get('requested_revision') or '（未记录引用）'}",
+                t("blocks.env.install_source", lang),
+                t(
+                    "blocks.env.install_source_value",
+                    lang,
+                    vcs=vcs.get("vcs", "vcs"),
+                    ref=vcs.get("requested_revision") or t("blocks.env.ref_not_recorded", lang),
+                ),
             ),
-            ("提交", str(vcs.get("commit_id"))[:12]),
+            (t("blocks.env.commit", lang), str(vcs.get("commit_id"))[:12]),
         ]
 
     rows += [
         ("harness", f"zoo-bench {harness.get('version')} @ {harness.get('commit')}"),
-        ("复现命令", "`" + " ".join(environment.get("command", [])) + "`"),
+        (t("blocks.env.reproduce", lang), "`" + " ".join(environment.get("command", [])) + "`"),
     ]
 
-    blocks = [_heading("运行环境"), Block(TABLE, headers=("项", "值"), rows=tuple(rows))]
+    blocks = [
+        _heading(t("blocks.env.title", lang)),
+        Block(
+            TABLE,
+            headers=(t("blocks.env.header_item", lang), t("blocks.env.header_value", lang)),
+            rows=tuple(rows),
+        ),
+    ]
     if subject.get("note"):
-        blocks.append(Block(NOTE, text=str(subject["note"])))
+        blocks.append(Block(NOTE, text=resolve_text(subject["note"], lang)))
     return blocks
 
 
-def _load_blocks(model: dict[str, Any]) -> list[Block]:
+def _load_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     load = model.get("load", {})
     return [
-        _heading("负载"),
+        _heading(t("blocks.load.title", lang)),
         Block(
             BULLETS,
             items=(
-                f"构成：{load.get('composition')}",
+                t("blocks.load.composition", lang, composition=load.get("composition")),
                 str(load.get("caveat", "")),
             ),
         ),
     ]
 
 
-def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
+def _conclusion_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     conclusion = model.get("conclusion", {})
     blocks = [
-        _heading(CONCLUSION_SECTION_TITLE),
+        _heading(conclusion_section_title(lang)),
         Block(BULLETS, items=tuple(conclusion.get("summary", []))),
     ]
     if conclusion.get("note"):
@@ -280,23 +427,23 @@ def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
     crossings = conclusion.get("overhead_crossings", [])
     if crossings:
         blocks += [
-            _heading("开销阈值交叉点", level=3),
+            _heading(t("blocks.crossing.title", lang), level=3),
             Block(
                 TABLE,
                 headers=(
-                    "方案",
-                    "并发度",
-                    "阈值",
-                    "首个不高于阈值的档位（微秒）",
-                    "所测档位（微秒）",
-                    "说明",
+                    t("blocks.header.scheme", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.threshold", lang),
+                    t("blocks.header.first_tier_below", lang),
+                    t("blocks.header.measured_tiers", lang),
+                    t("blocks.header.note", lang),
                 ),
                 rows=tuple(
                     (
                         crossing["adapter"],
                         str(crossing["concurrency"]),
-                        format_ratio(crossing["threshold"]),
-                        "—"
+                        format_ratio(crossing["threshold"], lang),
+                        t("blocks.empty_marker", lang)
                         if crossing["first_tier_at_or_below_threshold_us"] is None
                         else f"{crossing['first_tier_at_or_below_threshold_us']:g}",
                         ", ".join(f"{tier:g}" for tier in crossing["tiers_us"]),
@@ -312,15 +459,20 @@ def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
     turnings = conclusion.get("relative_turnings", [])
     if turnings:
         blocks += [
-            _heading("相对转折点", level=3),
+            _heading(t("blocks.turning.title", lang), level=3),
             Block(
                 TABLE,
-                headers=("对照方案", "并发度", "该方案不再更快的档位（微秒）", "说明"),
+                headers=(
+                    t("blocks.header.baseline", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.first_tier_not_faster", lang),
+                    t("blocks.header.note", lang),
+                ),
                 rows=tuple(
                     (
                         turning["baseline"],
                         str(turning["concurrency"]),
-                        "—"
+                        t("blocks.empty_marker", lang)
                         if turning["first_tier_baseline_not_faster_us"] is None
                         else f"{turning['first_tier_baseline_not_faster_us']:g}",
                         turning["note"],
@@ -332,11 +484,11 @@ def _conclusion_blocks(model: dict[str, Any]) -> list[Block]:
     return blocks
 
 
-def _chart_blocks(charts: list[dict[str, Any]], figures_rel: str) -> list[Block]:
+def _chart_blocks(charts: list[dict[str, Any]], figures_rel: str, lang: str) -> list[Block]:
     if not charts:
         return []
 
-    blocks: list[Block] = [_heading(CHART_SECTION_TITLE)]
+    blocks: list[Block] = [_heading(chart_section_title(lang))]
     for chart in charts:
         svg = chart["paths"].get("svg")
         if not svg:
@@ -347,7 +499,9 @@ def _chart_blocks(charts: list[dict[str, Any]], figures_rel: str) -> list[Block]
     return blocks
 
 
-def _pivot_block(rows: list[dict[str, Any]], *, value_of: Any, subject: str | None) -> Block:
+def _pivot_block(
+    rows: list[dict[str, Any]], *, value_of: Any, subject: str | None, lang: str
+) -> Block:
     """把逐单元行透成"行 = (并发度, 档位)、列 = 方案"的一张表。
 
     **列序把被测框架放最前**：读者的动作是"拿被测框架那一列去比别的列"，放在第一列就省掉在六个
@@ -365,12 +519,19 @@ def _pivot_block(rows: list[dict[str, Any]], *, value_of: Any, subject: str | No
 
     return Block(
         TABLE,
-        headers=("并发度", "执行体档位（微秒）", *adapters),
+        headers=(
+            t("blocks.header.concurrency", lang),
+            t("blocks.header.body_tier", lang),
+            *adapters,
+        ),
         rows=tuple(
             (
                 str(concurrency),
                 f"{tier:g}",
-                *(cells.get((adapter, concurrency, tier), "—") for adapter in adapters),
+                *(
+                    cells.get((adapter, concurrency, tier), t("blocks.empty_marker", lang))
+                    for adapter in adapters
+                ),
             )
             for concurrency, tier in keys
         ),
@@ -378,10 +539,11 @@ def _pivot_block(rows: list[dict[str, Any]], *, value_of: Any, subject: str | No
 
 
 #: 正文给透视表配的指引：明细在附录里，位置写清楚，读者不必找。
-_APPENDIX_POINTER = "逐单元数值（分位数、离散度、各轮原始样本）见文末「附录：全部数值」。"
+def _appendix_pointer(lang: str) -> str:
+    return t("blocks.appendix.pointer", lang)
 
 
-def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
+def _dimension_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """正文里的度量维度：**透视表**，明细留给附录。
 
     正文只回答"多大的任务用哪个方案"这一个问题，故每维只出一张"行 = (并发度, 档位)、列 = 方案"
@@ -393,14 +555,18 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
 
     latency = dimensions.get("latency", {})
     blocks += [
-        _heading(f"{DIMENSION_SECTION_PREFIX}{latency.get('title', '延迟')}"),
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{latency.get('title') or t('report.dimension.latency.title', lang)}"
+        ),
         Block(NOTE, text=str(latency.get("note", ""))),
         _pivot_block(
             latency.get("rows", []),
-            value_of=lambda row: format_seconds(row["end_to_end_per_task"]["median"]),
+            value_of=lambda row: format_seconds(row["end_to_end_per_task"]["median"], lang),
             subject=subject,
+            lang=lang,
         ),
-        Block(PARAGRAPH, text=_APPENDIX_POINTER),
+        Block(PARAGRAPH, text=_appendix_pointer(lang)),
     ]
 
     overhead = dimensions.get("overhead", {})
@@ -408,93 +574,141 @@ def _dimension_blocks(model: dict[str, Any]) -> list[Block]:
     withheld = [row for row in overhead.get("rows", []) if not row.get("interpretable", True)]
     overhead_note = str(overhead.get("note", ""))
     if withheld:
-        overhead_note += (
-            "。**带 — 的格**：该并发度超出这台机器的并行能力，执行体自报耗时含超订的调度等待，"
-            "与该行的每任务端到端不可比，故不给开销数字（端到端与吞吐见各自的维度）"
-        )
+        overhead_note += t("blocks.overhead.withheld", lang)
     blocks += [
-        _heading(f"{DIMENSION_SECTION_PREFIX}{overhead.get('title', '框架开销')}"),
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{overhead.get('title') or t('report.dimension.overhead.title', lang)}"
+        ),
         Block(NOTE, text=overhead_note),
         _pivot_block(
             overhead.get("rows", []),
-            value_of=lambda row: format_ratio(row["framework_overhead_ratio"]),
+            value_of=lambda row: format_ratio(row["framework_overhead_ratio"], lang),
             subject=subject,
+            lang=lang,
         ),
-        Block(PARAGRAPH, text=_APPENDIX_POINTER),
+        Block(PARAGRAPH, text=_appendix_pointer(lang)),
     ]
 
     throughput = dimensions.get("throughput", {})
     blocks += [
-        _heading(f"{DIMENSION_SECTION_PREFIX}{throughput.get('title', '吞吐')}"),
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{throughput.get('title') or t('report.dimension.throughput.title', lang)}"
+        ),
         Block(NOTE, text=str(throughput.get("note", ""))),
         _pivot_block(
             throughput.get("rows", []),
             value_of=lambda row: f"{float(row['throughput_per_second']):.1f}",
             subject=subject,
+            lang=lang,
         ),
-        Block(PARAGRAPH, text=_APPENDIX_POINTER),
+        Block(PARAGRAPH, text=_appendix_pointer(lang)),
     ]
 
-    blocks += _attribution_blocks(dimensions)
+    blocks += _attribution_blocks(dimensions, lang)
 
     semantics = dimensions.get("semantics", {})
     # 结论是在哪一代驱动面上得出的必须随报告给出：这一维的结论与坐标按版本成立，
     # 读者看不到"在哪一代得出"，就无法判断它对自己关心的那一版是否还作数
     derived_on = semantics.get("derived_on")
-    status = f"**状态：{semantics.get('status')}**"
+    status = t("blocks.semantics.status", lang, status=semantics.get("status"))
     if derived_on:
-        status += f"（结论在该次测量装着的「{derived_on}」代驱动面上得出）"
+        status += t("blocks.semantics.derived_on", lang, generation=derived_on)
     blocks += [
-        _heading(f"{DIMENSION_SECTION_PREFIX}{semantics.get('title', '调度语义的代价')}"),
-        Block(NOTE, text=f"口径：{semantics.get('scope_note', '')}"),
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{resolve_text(semantics['title'], lang) if semantics.get('title') else t('report.semantics.title', lang)}"
+        ),
+        Block(
+            NOTE,
+            text=t(
+                "blocks.scope_note",
+                lang,
+                note=resolve_text(semantics.get("scope_note") or "", lang),
+            ),
+        ),
         Block(PARAGRAPH, text=status),
     ]
     if semantics.get("reason"):
-        blocks.append(Block(PARAGRAPH, text=str(semantics["reason"])))
+        blocks.append(Block(PARAGRAPH, text=resolve_text(semantics["reason"], lang)))
     if semantics.get("items"):
         blocks.append(
             Block(
                 TABLE,
-                headers=("语义项", "层级", "探查方式", "可测", "证据 / 原因"),
+                headers=(
+                    t("blocks.header.semantics_item", lang),
+                    t("blocks.header.layer", lang),
+                    t("blocks.header.probe", lang),
+                    t("blocks.header.usable", lang),
+                    t("blocks.header.evidence_or_reason", lang),
+                ),
                 rows=tuple(
                     (
-                        item["item"],
-                        item["layer"],
-                        item["probe"],
-                        "是" if item["usable"] else "否",
-                        item.get("reason") or item.get("evidence", ""),
+                        resolve_text(item["item"], lang),
+                        resolve_text(item["layer"], lang),
+                        resolve_text(item["probe"], lang),
+                        t("blocks.yes", lang) if item["usable"] else t("blocks.no", lang),
+                        (
+                            resolve_text(item["reason"], lang, item.get("reason_params") or {})
+                            if item.get("reason")
+                            else resolve_text(
+                                item.get("evidence", ""),
+                                lang,
+                                item.get("evidence_params") or {},
+                            )
+                        ),
                     )
                     for item in semantics["items"]
                 ),
             )
         )
     if semantics.get("recheck_on_version_bump"):
-        blocks.append(Block(NOTE, text=str(semantics["recheck_on_version_bump"])))
+        blocks.append(Block(NOTE, text=resolve_text(semantics["recheck_on_version_bump"], lang)))
     return blocks
 
 
-def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
+def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
     """开销归因维度：四段、逐段结论、被测框架的细分。"""
     attribution = dimensions.get("attribution", {})
     labels: dict[str, str] = attribution.get("segment_labels", {})
     blocks = [
-        _heading(f"{DIMENSION_SECTION_PREFIX}{attribution.get('title', '开销归因')}"),
-        Block(NOTE, text=f"口径：{attribution.get('scope_note', '')}"),
-        Block(PARAGRAPH, text=f"**状态：{attribution.get('status')}**"),
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{attribution.get('title') or t('report.attribution.title', lang)}"
+        ),
+        Block(NOTE, text=t("blocks.scope_note", lang, note=attribution.get("scope_note", ""))),
+        Block(
+            PARAGRAPH,
+            text=t("blocks.semantics.status", lang, status=attribution.get("status")),
+        ),
     ]
     if attribution.get("reason"):
         blocks.append(Block(PARAGRAPH, text=str(attribution["reason"])))
     if attribution.get("note"):
-        blocks.append(Block(NOTE, text=str(attribution["note"])))
+        blocks.append(
+            Block(
+                NOTE,
+                text=resolve_text(
+                    attribution["note"],
+                    lang,
+                    {"concurrencies": attribution.get("over_subscribed_concurrencies", [])},
+                ),
+            )
+        )
 
     sampled = attribution.get("tiers_us") or []
     if sampled:
         blocks.append(
             Block(
                 PARAGRAPH,
-                text=f"抽样档位（微秒）：{', '.join(f'{tier:g}' for tier in sampled)}；"
-                f"并发度：{attribution.get('concurrencies')}；"
-                f"该机器并行能力：{attribution.get('cores')}",
+                text=t(
+                    "blocks.attribution.sampled",
+                    lang,
+                    tiers=_list_join((f"{tier:g}" for tier in sampled), lang),
+                    concurrencies=attribution.get("concurrencies"),
+                    cores=attribution.get("cores"),
+                ),
             )
         )
 
@@ -503,16 +717,30 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         blocks.append(
             Block(
                 TABLE,
-                headers=("方案", "并发度", "档位（微秒）", *(labels.values()), "状态"),
+                headers=(
+                    t("blocks.header.scheme", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.tier", lang),
+                    *(labels.values()),
+                    t("blocks.header.status", lang),
+                ),
                 rows=tuple(
                     (
                         group["adapter"],
                         str(group["concurrency"]),
                         f"{float(group['tier_us']):g}",
-                        *(format_seconds((group.get("segments") or {}).get(key)) for key in labels),
+                        *(
+                            format_seconds((group.get("segments") or {}).get(key), lang)
+                            for key in labels
+                        ),
                         group["status"]
                         if group["status"] == "ok"
-                        else f"{group['status']}：{group.get('reason', '')}",
+                        else t(
+                            "blocks.attribution.status_reason",
+                            lang,
+                            status=group["status"],
+                            reason=resolve_text(group.get("reason") or "", lang),
+                        ),
                     )
                     for group in groups
                 ),
@@ -521,26 +749,28 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
 
     findings = attribution.get("findings") or []
     if findings:
-        blocks.append(_heading("超出各对照方案的部分落在哪一段", level=3))
+        blocks.append(_heading(t("blocks.attribution.findings_title", lang), level=3))
         blocks.append(
             Block(
                 TABLE,
                 headers=(
-                    "对照方案",
-                    "并发度",
-                    "档位（微秒）",
-                    "每任务超出",
-                    "主要落在",
-                    "该段之差",
+                    t("blocks.header.baseline", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.tier", lang),
+                    t("blocks.header.excess_per_task", lang),
+                    t("blocks.header.dominant_segment", lang),
+                    t("blocks.header.segment_gap", lang),
                 ),
                 rows=tuple(
                     (
                         row["adapter"],
                         str(finding["concurrency"]),
                         f"{finding['tier_us']:g}",
-                        format_seconds(row["excess_seconds"]),
+                        format_seconds(row["excess_seconds"], lang),
                         labels.get(row["dominant_segment"], row["dominant_segment"]),
-                        format_seconds(row["segment_excess_seconds"][row["dominant_segment"]]),
+                        format_seconds(
+                            row["segment_excess_seconds"][row["dominant_segment"]], lang
+                        ),
                     )
                     for finding in findings
                     for row in finding["per_adapter"]
@@ -553,7 +783,13 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         blocks.append(
             Block(
                 NOTE,
-                text="用到的插桩接缝（在 harness 侧临时包装，不改框架代码）：" + "；".join(seals),
+                text=t(
+                    "blocks.attribution.seals",
+                    lang,
+                    seals=_list_join(
+                        (resolve_text(seal, lang) for seal in seals), lang, clause=True
+                    ),
+                ),
             )
         )
     missing = sorted({name for group in groups for name in (group.get("unavailable_seals") or [])})
@@ -562,8 +798,13 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         blocks.append(
             Block(
                 NOTE,
-                text="**本次未能量到的接缝**（被测框架的这一代没有对应入口，故相关细分项不在场）："
-                + "；".join(missing),
+                text=t(
+                    "blocks.attribution.seals_missing",
+                    lang,
+                    seals=_list_join(
+                        (resolve_text(name, lang) for name in missing), lang, clause=True
+                    ),
+                ),
             )
         )
 
@@ -582,19 +823,34 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         blocks.append(
             Block(
                 NOTE,
-                text="**插桩自身的成本**（被测框架那一侧，由同一子进程里插桩前后两轮配对得到，"
-                "可如实折价）："
-                + "；".join(
-                    f"{adapter} {tier:g} 微秒 / 并发 {concurrency}："
-                    f"不插桩 {format_seconds(values['baseline_end_to_end_seconds'])} 对插桩后 "
-                    f"{format_seconds(values['baseline_end_to_end_seconds'] + values['delta_seconds'])}，"
-                    f"差 {format_seconds(abs(values['delta_seconds']))}"
-                    + (
-                        "（插桩后反而更快：这轮里机器漂移比插桩成本还大）"
-                        if values["delta_seconds"] < 0
-                        else ""
-                    )
-                    for adapter, tier, concurrency, values in costs
+                text=t(
+                    "blocks.attribution.instrumentation_cost",
+                    lang,
+                    costs=_list_join(
+                        (
+                            t(
+                                "blocks.attribution.instrumentation_item",
+                                lang,
+                                scheme=adapter,
+                                tier=tier,
+                                concurrency=concurrency,
+                                before=format_seconds(values["baseline_end_to_end_seconds"], lang),
+                                after=format_seconds(
+                                    values["baseline_end_to_end_seconds"] + values["delta_seconds"],
+                                    lang,
+                                ),
+                                delta=format_seconds(abs(values["delta_seconds"]), lang),
+                            )
+                            + (
+                                t("blocks.attribution.instrumentation_drift", lang)
+                                if values["delta_seconds"] < 0
+                                else ""
+                            )
+                            for adapter, tier, concurrency, values in costs
+                        ),
+                        lang,
+                        clause=True,
+                    ),
                 ),
             )
         )
@@ -614,13 +870,25 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         blocks.append(
             Block(
                 NOTE,
-                text="**细分的可加性**："
-                + str(overlaps[0][3].get("note", ""))
-                + "本轮实测超出量："
-                + "；".join(
-                    f"{adapter} {tier:g} 微秒 / 并发 {concurrency} 超出 "
-                    f"{values['max_overlap_ratio'] * 100:.1f}%"
-                    for adapter, tier, concurrency, values in overlaps
+                text=t(
+                    "blocks.attribution.additivity",
+                    lang,
+                    note=resolve_text(str(overlaps[0][3].get("note", "")), lang),
+                    overlaps=_list_join(
+                        (
+                            t(
+                                "blocks.attribution.additivity_item",
+                                lang,
+                                scheme=adapter,
+                                tier=tier,
+                                concurrency=concurrency,
+                                overlap=values["max_overlap_ratio"],
+                            )
+                            for adapter, tier, concurrency, values in overlaps
+                        ),
+                        lang,
+                        clause=True,
+                    ),
                 ),
             )
         )
@@ -628,15 +896,24 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
     drill_labels: dict[str, str] = attribution.get("drill_labels", {})
     drilled = [finding for finding in findings if finding.get("subject_drill_down")]
     if drilled and drill_labels:
-        blocks.append(_heading("被测框架的提交侧由什么构成", level=3))
+        blocks.append(_heading(t("blocks.attribution.drills_title", lang), level=3))
         blocks.append(
             Block(
                 BULLETS,
                 items=tuple(
-                    f"并发度 {finding['concurrency']}、档位 {finding['tier_us']:g} 微秒："
-                    + "；".join(
-                        f"{drill_labels.get(key, key)} {format_seconds(value)}"
-                        for key, value in finding["subject_drill_down"].items()
+                    t(
+                        "blocks.attribution.drill_item",
+                        lang,
+                        concurrency=finding["concurrency"],
+                        tier=finding["tier_us"],
+                        parts=_list_join(
+                            (
+                                f"{drill_labels.get(key, key)} {format_seconds(value, lang)}"
+                                for key, value in finding["subject_drill_down"].items()
+                            ),
+                            lang,
+                            clause=True,
+                        ),
                     )
                     for finding in drilled
                 ),
@@ -644,12 +921,12 @@ def _attribution_blocks(dimensions: dict[str, Any]) -> list[Block]:
         )
 
     if attribution.get("summary"):
-        blocks.append(_heading("归因结论", level=3))
+        blocks.append(_heading(t("blocks.attribution.summary_title", lang), level=3))
         blocks.append(Block(BULLETS, items=tuple(str(line) for line in attribution["summary"])))
     return blocks
 
 
-def _favorable_blocks(model: dict[str, Any]) -> list[Block]:
+def _favorable_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """被测框架处于优势的档位。
 
     **结构与「公开的不利数据」刻意逐列对称**（只有方向不同）：两节出自同一份同运行内比值，
@@ -658,26 +935,32 @@ def _favorable_blocks(model: dict[str, Any]) -> list[Block]:
     """
     favorable = model.get("favorable", {})
     blocks = [
-        _heading("被测框架在哪些档位更快"),
+        _heading(t("blocks.favourable.title", lang)),
         Block(NOTE, text=str(favorable.get("note", ""))),
     ]
 
     items = favorable.get("items", [])
     if not items:
-        blocks.append(Block(PARAGRAPH, text="所测档位内未出现被测框架处于优势的情形。"))
+        blocks.append(Block(PARAGRAPH, text=t("blocks.favourable.empty", lang)))
         return blocks
 
     blocks.append(
         Block(
             TABLE,
-            headers=("对照方案", "并发度", "执行体档位（微秒）", "差距", "被测框架中位数"),
+            headers=(
+                t("blocks.header.baseline", lang),
+                t("blocks.header.concurrency", lang),
+                t("blocks.header.body_tier", lang),
+                t("blocks.header.gap", lang),
+                t("blocks.header.subject_median", lang),
+            ),
             rows=tuple(
                 (
                     item["baseline"],
                     str(item["concurrency"]),
                     f"{item['body_tier_us']:g}",
                     item["margin"],
-                    format_seconds(item["subject_median_seconds"]),
+                    format_seconds(item["subject_median_seconds"], lang),
                 )
                 for item in items
             ),
@@ -686,7 +969,7 @@ def _favorable_blocks(model: dict[str, Any]) -> list[Block]:
     return blocks
 
 
-def _tied_blocks(model: dict[str, Any]) -> list[Block]:
+def _tied_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """分不出胜负的档位：两侧差异小于该档位的带宽。
 
     **单列成节、覆盖全部所测档位**：它既不是"藏东西"的地方，也不是优/劣两节的子集。把噪声级差异
@@ -694,32 +977,39 @@ def _tied_blocks(model: dict[str, Any]) -> list[Block]:
     """
     tied = model.get("tied", {})
     blocks = [
-        _heading("分不出胜负的档位"),
+        _heading(t("blocks.tied.title", lang)),
         Block(NOTE, text=str(tied.get("note", ""))),
     ]
     band = model.get("tie_band") or {}
     if band.get("definition"):
-        blocks.append(Block(NOTE, text=f"判据：{band['definition']}"))
+        blocks.append(
+            Block(NOTE, text=t("blocks.tied.criterion", lang, definition=band["definition"]))
+        )
 
     low, high = tied.get("band_min"), tied.get("band_max")
     if low is not None and high is not None:
         blocks.append(
             Block(
                 PARAGRAPH,
-                text=f"本期带宽：{float(low) * 100:.1f}% 到 {float(high) * 100:.1f}%"
-                "（随各档位的离散度不同而不同）。",
+                text=t("blocks.tied.band_now", lang, low=float(low), high=float(high)),
             )
         )
 
     items = tied.get("items", [])
     if not items:
-        blocks.append(Block(PARAGRAPH, text="所测档位内每一档都分得出胜负。"))
+        blocks.append(Block(PARAGRAPH, text=t("blocks.tied.empty", lang)))
         return blocks
 
     blocks.append(
         Block(
             TABLE,
-            headers=("对照方案", "并发度", "执行体档位（微秒）", "比值", "原因"),
+            headers=(
+                t("blocks.header.baseline", lang),
+                t("blocks.header.concurrency", lang),
+                t("blocks.header.body_tier", lang),
+                t("blocks.header.ratio", lang),
+                t("blocks.header.reason", lang),
+            ),
             rows=tuple(
                 (
                     item["baseline"],
@@ -736,47 +1026,50 @@ def _tied_blocks(model: dict[str, Any]) -> list[Block]:
 
 
 #: 附录的说明：为什么明细在末尾、以及它一个都没少。
-APPENDIX_NOTE = (
-    "正文为可读性只给透视表；这里逐单元给出**改动前的全部字段**（分位数、离散度、执行体实测等）。"
-    "**数值一个不少**：明细放在报告主体内，而不是外链、折叠或附件——「可查」一旦要另外去找，"
-    "就等于不可查"
-)
+def _appendix_note(lang: str) -> str:
+    return t("blocks.appendix.note", lang)
 
 
-def _appendix_blocks(model: dict[str, Any]) -> list[Block]:
+def _appendix_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """附录：全部数值 —— 逐单元明细。
 
     位置在正文之后只解决**顺序**，不减少任何一行：读者要核对某个数字时翻到这里，逐单元逐字段都在。
     """
     dimensions = model.get("dimensions", {})
     blocks: list[Block] = [
-        _heading(APPENDIX_SECTION_PREFIX + "全部数值"),
-        Block(NOTE, text=APPENDIX_NOTE),
+        _heading(appendix_section_prefix(lang) + t("blocks.appendix.all_values", lang)),
+        Block(NOTE, text=_appendix_note(lang)),
     ]
 
     latency = dimensions.get("latency", {})
     if latency.get("rows"):
-        blocks.append(_heading(f"{APPENDIX_SECTION_PREFIX}{latency.get('title', '延迟')}", level=3))
+        blocks.append(
+            _heading(
+                f"{appendix_section_prefix(lang)}"
+                f"{latency.get('title') or t('report.dimension.latency.title', lang)}",
+                level=3,
+            )
+        )
         blocks.append(
             Block(
                 TABLE,
                 headers=(
-                    "方案",
-                    "并发度",
-                    "执行体档位（微秒）",
-                    "中位数",
-                    "p95",
-                    "p99",
-                    "相对离散度",
+                    t("blocks.header.scheme", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.body_tier", lang),
+                    t("blocks.header.median", lang),
+                    t("blocks.header.p95", lang),
+                    t("blocks.header.p99", lang),
+                    t("blocks.header.relative_spread", lang),
                 ),
                 rows=tuple(
                     (
                         row["adapter"],
                         str(row["concurrency"]),
                         f"{row['body_tier_us']:g}",
-                        format_seconds(row["end_to_end_per_task"]["median"]),
-                        format_seconds(row["end_to_end_per_task"]["p95"]),
-                        format_seconds(row["end_to_end_per_task"]["p99"]),
+                        format_seconds(row["end_to_end_per_task"]["median"], lang),
+                        format_seconds(row["end_to_end_per_task"]["p95"], lang),
+                        format_seconds(row["end_to_end_per_task"]["p99"], lang),
                         f"{float(row['end_to_end_per_task']['relative_spread']):.3f}",
                     )
                     for row in latency["rows"]
@@ -787,27 +1080,31 @@ def _appendix_blocks(model: dict[str, Any]) -> list[Block]:
     overhead = dimensions.get("overhead", {})
     if overhead.get("rows"):
         blocks.append(
-            _heading(f"{APPENDIX_SECTION_PREFIX}{overhead.get('title', '框架开销')}", level=3)
+            _heading(
+                f"{appendix_section_prefix(lang)}"
+                f"{overhead.get('title') or t('report.dimension.overhead.title', lang)}",
+                level=3,
+            )
         )
         blocks.append(
             Block(
                 TABLE,
                 headers=(
-                    "方案",
-                    "并发度",
-                    "执行体档位（微秒）",
-                    "框架开销",
-                    "开销占比",
-                    "执行体实测",
+                    t("blocks.header.scheme", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.body_tier", lang),
+                    t("blocks.header.overhead", lang),
+                    t("blocks.header.overhead_share", lang),
+                    t("blocks.header.body_measured", lang),
                 ),
                 rows=tuple(
                     (
                         row["adapter"],
                         str(row["concurrency"]),
                         f"{row['body_tier_us']:g}",
-                        format_seconds(row["framework_overhead_seconds"]),
-                        format_ratio(row["framework_overhead_ratio"]),
-                        format_seconds(row["body_seconds"]),
+                        format_seconds(row["framework_overhead_seconds"], lang),
+                        format_ratio(row["framework_overhead_ratio"], lang),
+                        format_seconds(row["body_seconds"], lang),
                     )
                     for row in overhead["rows"]
                 ),
@@ -817,12 +1114,21 @@ def _appendix_blocks(model: dict[str, Any]) -> list[Block]:
     throughput = dimensions.get("throughput", {})
     if throughput.get("rows"):
         blocks.append(
-            _heading(f"{APPENDIX_SECTION_PREFIX}{throughput.get('title', '吞吐')}", level=3)
+            _heading(
+                f"{appendix_section_prefix(lang)}"
+                f"{throughput.get('title') or t('report.dimension.throughput.title', lang)}",
+                level=3,
+            )
         )
         blocks.append(
             Block(
                 TABLE,
-                headers=("方案", "并发度", "执行体档位（微秒）", "吞吐（任务/秒）"),
+                headers=(
+                    t("blocks.header.scheme", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.body_tier", lang),
+                    t("blocks.header.throughput", lang),
+                ),
                 rows=tuple(
                     (
                         row["adapter"],
@@ -837,29 +1143,35 @@ def _appendix_blocks(model: dict[str, Any]) -> list[Block]:
     return blocks
 
 
-def _unfavorable_blocks(model: dict[str, Any]) -> list[Block]:
+def _unfavorable_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     unfavorable = model.get("unfavorable", {})
     blocks = [
-        _heading(UNFAVORABLE_SECTION_TITLE),
+        _heading(unfavorable_section_title(lang)),
         Block(NOTE, text=str(unfavorable.get("note", ""))),
     ]
 
     items = unfavorable.get("items", [])
     if not items:
-        blocks.append(Block(PARAGRAPH, text="所测档位内未出现被测框架处于劣势的情形。"))
+        blocks.append(Block(PARAGRAPH, text=t("blocks.unfavourable.empty", lang)))
         return blocks
 
     blocks.append(
         Block(
             TABLE,
-            headers=("对照方案", "并发度", "执行体档位（微秒）", "差距", "被测框架中位数"),
+            headers=(
+                t("blocks.header.baseline", lang),
+                t("blocks.header.concurrency", lang),
+                t("blocks.header.body_tier", lang),
+                t("blocks.header.gap", lang),
+                t("blocks.header.subject_median", lang),
+            ),
             rows=tuple(
                 (
                     item["baseline"],
                     str(item["concurrency"]),
                     f"{item['body_tier_us']:g}",
                     item["gap"],
-                    format_seconds(item["subject_median_seconds"]),
+                    format_seconds(item["subject_median_seconds"], lang),
                 )
                 for item in items
             ),
@@ -868,24 +1180,25 @@ def _unfavorable_blocks(model: dict[str, Any]) -> list[Block]:
     return blocks
 
 
-def caveat_text(caveat: dict[str, Any]) -> str:
-    """一条口径局限的文字。适配器名可选——不是每条局限都归属于某个方案。"""
-    adapter = f"（{caveat['adapter']}）" if caveat.get("adapter") else ""
-    return f"**{caveat.get('kind', '')}**{adapter}：{caveat.get('text', '')}"
+def caveat_text(caveat: dict[str, Any], lang: str) -> str:
+    """一条口径局限的文字。适配器名可选——不是每条局限都归属于某个方案。
+
+    ``text`` 是**留档里的值**：新档存的是目录键（方案的 ``notes``、zoo 的 ``drive_level``），
+    旧档存的是散文，一律经 :func:`resolve_text` 透传或解析。
+    """
+    adapter = (
+        t("blocks.caveat.adapter", lang, adapter=caveat["adapter"]) if caveat.get("adapter") else ""
+    )
+    return t(
+        "blocks.caveat.line",
+        lang,
+        kind=caveat.get("kind", ""),
+        adapter=adapter,
+        text=resolve_text(caveat.get("text", ""), lang),
+    )
 
 
-EXTENSION_NOTE = (
-    "本 harness 的对照方案是**开放**的：实现 `zoo_bench.adapters.BaseAdapter` 的四个方法"
-    "（`setup` / `submit` / `drain` / `teardown`），用 `zoo_bench.adapters.registry.register` "
-    "登记，或在 `matrix.yaml` 的 `extra_modules` 里列出你的模块路径——**无需改动本仓库任何"
-    "文件**。你的实现会通过同一套等价性验证（提交 N 个执行体、断言全部执行且各执行一次），"
-    "不通过的不会被采信。"
-    "**我们主动把这条路径写进报告**：一份由被测框架维护者撰写、测量被测框架的报告，读者有理由"
-    "怀疑对照被写慢或口径被挑选；让任何人能提交自己的对照，是这份报告可被质疑、也可被证伪的前提。"
-)
-
-
-def _methodology_blocks(model: dict[str, Any]) -> list[Block]:
+def _methodology_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """测量口径：让读者知道这些数字是怎么来的。
 
     独立成节而不是散在各处——**三条口径是数字可信度的全部依据**，读者要能一眼看全并据此判断
@@ -896,74 +1209,109 @@ def _methodology_blocks(model: dict[str, Any]) -> list[Block]:
     run = model.get("run", {})
     warmups = run.get("warmup_rounds") or []
     rounds = run.get("measured_rounds") or []
-    warmup_text = "、".join(str(value) for value in warmups) or "—"
-    rounds_text = "、".join(str(value) for value in rounds) or "—"
+    warmup_text = _list_join((str(value) for value in warmups), lang) or t(
+        "blocks.empty_marker", lang
+    )
+    rounds_text = _list_join((str(value) for value in rounds), lang) or t(
+        "blocks.empty_marker", lang
+    )
 
     return [
-        _heading("测量口径"),
+        _heading(t("blocks.methodology.title", lang)),
         Block(
             BULLETS,
             items=(
-                "**执行体耗时在同一次运行内埋点**：由执行体在自身内部测量并回传，框架开销 ="
-                "端到端 - 它。**不做跨运行减法**——两次运行的状态不同（缓存、频率、调度噪声），"
-                "相减引入的是系统性偏差。",
-                f"**预热不入统计**：每个单元先跑 {warmup_text} 轮预热并丢弃，只统计随后的"
-                f" {rounds_text} 轮正式采样；采样数等于「正式轮数 x 并发度」。",
-                "**绝对耗时不可跨运行比较**：它只用于看量级；跨版本/跨机器要看的是**同一次运行内"
-                "的相对量**（开销占比、相对各对照方案的倍数），它们对整体快慢不敏感。",
+                t("blocks.methodology.in_run", lang),
+                t("blocks.methodology.warmup", lang, warmups=warmup_text, rounds=rounds_text),
+                t("blocks.methodology.absolute", lang),
             ),
         ),
     ]
 
 
-def _extension_blocks() -> list[Block]:
+def _extension_blocks(lang: str) -> list[Block]:
     """如何加入你自己的对照。
 
     独立成节而不是塞进脚注：它是这份报告**可被证伪**的前提——读者若能自己跑一遍对照，报告里
     的数字才不是只能听信的一面之词。
     """
-    return [Block(HEADING, text="加入你自己的对照"), Block(PARAGRAPH, text=EXTENSION_NOTE)]
+    return [
+        Block(HEADING, text=t("blocks.extension.title", lang)),
+        Block(PARAGRAPH, text=t("blocks.extension.note", lang)),
+    ]
 
 
-def _caveat_blocks(model: dict[str, Any]) -> list[Block]:
+def _caveat_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     caveats = model.get("caveats", [])
-    items = tuple(caveat_text(caveat) for caveat in caveats)
-    blocks = [_heading("口径局限与偏差来源")]
-    blocks.append(Block(BULLETS, items=items or ("（无）",)))
-    blocks.append(Block(NOTE, text=f"绝对耗时：{model.get('absolute', {}).get('note', '')}"))
+    items = tuple(caveat_text(caveat, lang) for caveat in caveats)
+    blocks = [_heading(t("blocks.caveats.title", lang))]
+    blocks.append(Block(BULLETS, items=items or (t("blocks.caveats.none", lang),)))
+    blocks.append(
+        Block(
+            NOTE,
+            text=t(
+                "blocks.caveats.absolute",
+                lang,
+                note=resolve_text(str(model.get("absolute", {}).get("note", "")), lang),
+            ),
+        )
+    )
     return blocks
 
 
-def _self_check_blocks(model: dict[str, Any]) -> list[Block]:
+def _self_check_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     self_check = model.get("self_check", {})
     return [
-        _heading("自检"),
+        _heading(t("blocks.self_check.title", lang)),
         Block(
             BULLETS,
             items=(
-                f"测量自检整体：{'通过' if self_check.get('ok') else '**未通过**'}",
-                f"进程隔离：{model.get('absolute', {}).get('process_isolation', {})}",
+                t(
+                    "blocks.self_check.overall",
+                    lang,
+                    verdict=(
+                        t("blocks.self_check.passed", lang)
+                        if self_check.get("ok")
+                        else t("blocks.self_check.failed", lang)
+                    ),
+                ),
+                t(
+                    "blocks.self_check.isolation",
+                    lang,
+                    value=model.get("absolute", {}).get("process_isolation", {}),
+                ),
             ),
         ),
     ]
 
 
-def _header_blocks(model: dict[str, Any]) -> list[Block]:
+def _header_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     """标题与原始数据出处。
 
     放在块层而不是各序列化器里——三个后端都得有同一个标题与同一句出处，各写一遍就是三处漂移点。
     """
-    blocks = [Block(HEADING, text="zoo-bench 性能报告", level=1)]
+    blocks = [Block(HEADING, text=t("blocks.report.title", lang), level=1)]
     source = model.get("source")
     if source and source.get("path"):
         blocks.append(
-            Block(PARAGRAPH, text=f"原始数据：`{repository_relative_path(str(source['path']))}`")
+            Block(
+                PARAGRAPH,
+                text=t(
+                    "blocks.report.source",
+                    lang,
+                    path=repository_relative_path(str(source["path"])),
+                ),
+            )
         )
     return blocks
 
 
 def build_blocks(
-    model: dict[str, Any], charts: list[dict[str, Any]], *, figures_rel: str = "figures"
+    model: dict[str, Any],
+    charts: list[dict[str, Any]],
+    *,
+    figures_rel: str = "figures",
+    lang: str,
 ) -> list[Block]:
     """由报告模型抽出与输出格式无关的块列表。
 
@@ -971,6 +1319,7 @@ def build_blocks(
         model: :func:`zoo_bench.report.build_model` 的返回值。
         charts: :func:`zoo_bench.render.charts.render_all` 的返回值。
         figures_rel: 图表目录相对报告文件的路径。
+        lang: 报告语言（``"en"`` 或 ``"zh"``）。
 
     Returns:
         块列表。
@@ -983,16 +1332,16 @@ def build_blocks(
         _methodology_blocks,
         _conclusion_blocks,
     ):
-        blocks += builder(model)
-    blocks += _chart_blocks(charts, figures_rel)
-    blocks += _dimension_blocks(model)
+        blocks += builder(model, lang)
+    blocks += _chart_blocks(charts, figures_rel, lang)
+    blocks += _dimension_blocks(model, lang)
     # 优 / 平 / 劣三节同源同显著：读者按「赢在哪、分不出、输在哪」成对地读，任一方都不是脚注
-    blocks += _favorable_blocks(model)
-    blocks += _unfavorable_blocks(model)
-    blocks += _tied_blocks(model)
-    blocks += _caveat_blocks(model)
-    blocks += _extension_blocks()
-    blocks += _self_check_blocks(model)
+    blocks += _favorable_blocks(model, lang)
+    blocks += _unfavorable_blocks(model, lang)
+    blocks += _tied_blocks(model, lang)
+    blocks += _caveat_blocks(model, lang)
+    blocks += _extension_blocks(lang)
+    blocks += _self_check_blocks(model, lang)
     # 明细在最后：正文先给结论与透视，读者要核对时再翻附录
-    blocks += _appendix_blocks(model)
+    blocks += _appendix_blocks(model, lang)
     return blocks

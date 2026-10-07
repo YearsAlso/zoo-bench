@@ -134,7 +134,9 @@ def test_warmup_samples_are_excluded(small_run: dict[str, Any]) -> None:
     """3.3：采样数恰好等于「正式轮数 × 并发度」，预热轮的数据不在其中。"""
     for unit in small_run["units"]:
         spec = unit["spec"]
-        assert unit["absolute"]["body_seconds"]["n"] == spec["measured_rounds"] * spec["concurrency"]
+        assert (
+            unit["absolute"]["body_seconds"]["n"] == spec["measured_rounds"] * spec["concurrency"]
+        )
 
 
 def test_samples_report_percentiles_and_dispersion(small_run: dict[str, Any]) -> None:
@@ -154,12 +156,12 @@ def test_absolute_and_relative_are_separate_groups(small_run: dict[str, Any]) ->
         assert unit["absolute"]["note"] == ABSOLUTE_NOTE
 
     relative = small_run["relative"]
-    assert "note" in relative
+    assert relative["note"] == "runner.relative.note"
     assert relative["comparisons"], "以 zoo 为基准的相对比应存在"
     for comparison in relative["comparisons"]:
         assert comparison["subject"] == "zoo"
         assert comparison["ratios_vs_subject"], "对照方案的比值应存在"
-        assert "仅在同一次运行内成立" in comparison["note"]
+        assert comparison["note"] == "runner.relative.comparison_note"
 
 
 def test_archive_keeps_the_raw_per_round_samples(small_run: dict[str, Any]) -> None:
@@ -369,7 +371,9 @@ def test_overhead_check_only_gates_the_lowest_concurrency() -> None:
     high = next(check for check in result["checks"] if check["concurrency"] == 64)
     assert high["gated"] is False
     assert high["growth"] > OVERHEAD_TIER_RATIO_LIMIT
-    assert "排队" in high["note"], "不参与判定必须给出原因，且原始值仍要在场"
+    assert high["note"] == "runner.self_check.overhead_polluted", (
+        "不参与判定必须给出原因，且原始值仍要在场"
+    )
     assert high["overheads_seconds"]
 
 
@@ -469,8 +473,10 @@ def test_overhead_check_tolerates_measured_shared_runner_noise() -> None:
 
     把上限的**下界**固定住，避免以后有人凭感觉调紧而让门禁因环境噪声变红。
     """
-    units = [_synthetic_unit("zoo", tier_us, 0.000020 * factor) for tier_us, factor in
-             zip(TIERS_US, (1.0, 1.17, 1.5, 3.22), strict=True)]
+    units = [
+        _synthetic_unit("zoo", tier_us, 0.000020 * factor)
+        for tier_us, factor in zip(TIERS_US, (1.0, 1.17, 1.5, 3.22), strict=True)
+    ]
     assert check_overhead_across_tiers(units)["ok"] is True
 
 
@@ -510,7 +516,9 @@ def test_body_deviation_only_gates_the_lowest_concurrency() -> None:
 
     high = next(check for check in graded["checks"] if check["concurrency"] == 64)
     assert high["gated"] is False
-    assert "环境超订" in high["note"], "不参与判定必须给出原因，且原始值仍要在场"
+    assert high["note"] == "runner.self_check.body_oversubscribed", (
+        "不参与判定必须给出原因，且原始值仍要在场"
+    )
     assert high["body_deviation"] == 1.0
 
 
@@ -523,7 +531,7 @@ def test_body_deviation_does_not_gate_the_shortest_tier() -> None:
 
     assert graded["ok"] is True, "档位过短时不该判否"
     assert graded["checks"][0]["gated"] is False
-    assert "档位过短" in graded["checks"][0]["note"]
+    assert graded["checks"][0]["note"] == "runner.self_check.body_too_short"
 
 
 def test_body_deviation_gates_failure_at_the_lowest_concurrency() -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from zoo_bench import storage
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import assets, report
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import html as html_renderer
@@ -22,12 +23,17 @@ FRAMEWORK = "zoo-framework==9.9.9"
 
 def _model() -> dict[str, Any]:
     return {
+        "lang": LANG_ZH,
         "source": {"path": "results/x.json"},
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
             "os": {"system": "TestOS", "release": "1", "version": "1.0"},
             "python": {"version": "3.13.0", "implementation": "CPython", "executable": "/py"},
-            "subject": {"dist_version": "9.9.9", "module_version": "1.0", "note": "以发行元数据为准"},
+            "subject": {
+                "dist_version": "9.9.9",
+                "module_version": "1.0",
+                "note": "以发行元数据为准",
+            },
             "harness": {"version": "0.0.1", "commit": "deadbeef"},
             "command": ["zoo-bench", "run"],
         },
@@ -80,6 +86,10 @@ def test_stylesheet_ships_and_is_written_next_to_the_page(tmp_path: Path) -> Non
     home = (tmp_path / index_renderer.INDEX_FILENAME).read_text(encoding="utf-8")
     assert f'<link rel="stylesheet" href="{assets.STYLE_FILENAME}">' in home
 
+    # 样式表只有一份（站点根下），中文页在 zh/ 里引用它要回上一层
+    chinese = (tmp_path / "zh" / index_renderer.INDEX_FILENAME).read_text(encoding="utf-8")
+    assert f'<link rel="stylesheet" href="../{assets.STYLE_FILENAME}">' in chinese
+
 
 def test_report_page_is_self_contained(tmp_path: Path) -> None:
     """报告页（deck）自足：样式内联、不引外部样式表。
@@ -115,7 +125,7 @@ def test_stylesheet_carries_the_requested_rules() -> None:
 
 def test_headings_get_anchors_and_the_toc_links_them() -> None:
     """结构项：每个标题有锚点，目录链到二级标题，且链接目标真实存在。"""
-    blocks = blocks_module.build_blocks(_model(), [])
+    blocks = blocks_module.build_blocks(_model(), [], lang=LANG_ZH)
     page = html_renderer.blocks_to_html(blocks)
 
     section = "结论摘要"
@@ -153,7 +163,11 @@ def _archive(results: Path, run: dict[str, Any]) -> None:
 
 
 def test_index_shows_a_card_per_version_with_run_facts(tmp_path: Path) -> None:
-    """首页卡片上的事实取自**留档**，不是猜的——生成时间、单元数、自检状态都在那里。"""
+    """首页卡片上的事实取自**留档**，不是猜的——生成时间、单元数、自检状态都在那里。
+
+    两种语言各读一份卡片：事实来自同一份留档（语言无关），而**链接按各自语言摆放**取——英文页
+    的卡片指向版本目录自身，中文页的指向该目录下的 ``zh/``（design D3/D4）。
+    """
     results = tmp_path / "results"
     site = tmp_path / "site"
     slug = storage.framework_slug(FRAMEWORK)
@@ -167,9 +181,10 @@ def test_index_shows_a_card_per_version_with_run_facts(tmp_path: Path) -> None:
             "absolute_note": "不可跨运行比较",
         },
     )
-    (site / slug).mkdir(parents=True)
-    (site / slug / "index.html").write_text("x", encoding="utf-8")
-    (site / slug / "report.pdf").write_bytes(b"%PDF-1.4")
+    for directory in (site / slug, site / slug / "zh"):
+        directory.mkdir(parents=True)
+        (directory / "index.html").write_text("x", encoding="utf-8")
+        (directory / "report.pdf").write_bytes(b"%PDF-1.4")
 
     page = index_renderer.render(results, site).read_text(encoding="utf-8")
 
@@ -177,33 +192,55 @@ def test_index_shows_a_card_per_version_with_run_facts(tmp_path: Path) -> None:
     assert slug in page
     assert "96" in page, "有效单元数应来自留档"
     assert "4" in page, "失败单元数应来自留档"
-    assert "自检通过" in page
+    assert "self-check passed" in page
     assert f'href="{slug}/index.html"' in page
     assert f'href="{slug}/report.pdf"' in page
     assert "2026-01-01" in page, "生成时间应来自留档的 started_at_epoch（UTC）"
 
+    chinese = (site / "zh" / "index.html").read_text(encoding="utf-8")
+    assert "自检通过" in chinese, "中文页的标签也来自目录"
+    assert f'href="../{slug}/zh/index.html"' in chinese, "中文页的卡片指向中文语言摆放"
+    assert f'href="../{slug}/zh/report.pdf"' in chinese
+
 
 def test_index_links_the_markdown_full_text(tmp_path: Path) -> None:
-    """首页要能进到 Markdown 全文，而**没有全文时不凭空造链接**。
+    """首页要能进到 Markdown 全文，而**没有全文时不凭空造链接**——**按各自语言树分别判断**。
 
     deck 为了"一页一个结论"压缩了篇幅，逐单元明细留在全文里；不给入口等于把它变成"要另外找"的
-    东西。反过来，还没导出全文的版本指过去就是死链。
+    东西。反过来，还没导出全文的版本指过去就是死链。两种语言的全文是两个文件，故存在性也必须
+    各判各的：英文导了、中文没导时，只有英文页该出现链接。
     """
     results = tmp_path / "results"
     site = tmp_path / "site"
     slug = storage.framework_slug(FRAMEWORK)
     _archive(results, {"started_at_epoch": 1767225600.0, "unit_count": 96})
-    (site / slug).mkdir(parents=True)
-    (site / slug / "index.html").write_text("x", encoding="utf-8")
+    for directory in (site / slug, site / slug / "zh"):
+        directory.mkdir(parents=True)
+        (directory / "index.html").write_text("x", encoding="utf-8")
 
-    without = index_renderer.render(results, site).read_text(encoding="utf-8")
-    assert f'href="{slug}/report.md"' not in without, "全文还没导出，不该有链接"
+    def pages() -> tuple[str, str]:
+        index_renderer.render(results, site)
+        return (
+            (site / "index.html").read_text(encoding="utf-8"),
+            (site / "zh" / "index.html").read_text(encoding="utf-8"),
+        )
+
+    english, chinese = pages()
+    assert f'href="{slug}/report.md"' not in english, "全文还没导出，不该有链接"
+    assert f'href="../{slug}/zh/report.md"' not in chinese
 
     (site / slug / "report.md").write_text("# 报告", encoding="utf-8")
-    with_markdown = index_renderer.render(results, site).read_text(encoding="utf-8")
+    english, chinese = pages()
 
-    assert f'href="{slug}/report.md"' in with_markdown
-    assert "全文（Markdown）" in with_markdown, "链接要说清它是什么，不能只写“全文”"
+    assert f'href="{slug}/report.md"' in english
+    assert "full text (Markdown)" in english, "链接要说清它是什么，不能只写“全文”"
+    assert f'href="../{slug}/zh/report.md"' not in chinese, "中文全文还没导出，中文页不该有链接"
+
+    (site / slug / "zh" / "report.md").write_text("# 报告", encoding="utf-8")
+    _, chinese = pages()
+
+    assert f'href="../{slug}/zh/report.md"' in chinese
+    assert "全文（Markdown）" in chinese
 
 
 def test_index_omits_versions_whose_report_was_not_rendered(tmp_path: Path) -> None:
@@ -212,10 +249,12 @@ def test_index_omits_versions_whose_report_was_not_rendered(tmp_path: Path) -> N
     site = tmp_path / "site"
     _archive(results, {"started_at_epoch": 1767225600.0, "unit_count": 1})
 
-    page = index_renderer.render(results, site).read_text(encoding="utf-8")
+    index_renderer.render(results, site)
 
+    page = (site / "index.html").read_text(encoding="utf-8")
     assert "version-card" not in page
-    assert "还没有任何已渲染的报告" in page
+    assert "No rendered reports yet." in page
+    assert "还没有任何已渲染的报告" in (site / "zh" / "index.html").read_text(encoding="utf-8")
 
 
 def test_index_lists_compare_pages_with_their_labels(tmp_path: Path) -> None:
@@ -239,24 +278,37 @@ def test_index_lists_compare_pages_with_their_labels(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    page = index_renderer.render(tmp_path / "results", site).read_text(encoding="utf-8")
+    index_renderer.render(tmp_path / "results", site)
+    page = (site / "index.html").read_text(encoding="utf-8")
 
     assert "compare-card" in page
     assert "0.6.0 → 0.7.1b0" in page, "标题应取对比结果里的标签"
     assert "96" in page, "共有单元数应来自对比结果"
-    assert "两侧自检均通过" in page
+    assert "both sides passed self-check" in page
     assert 'href="compare-zoo-framework-0.6.0--zoo-framework-0.7.1b0/index.html"' in page
+    # 语言树各判各的：中文对比页还没写，中文首页就不该有这张卡片
+    chinese = (site / "zh" / "index.html").read_text(encoding="utf-8")
+    assert "compare-card" not in chinese
+
+    (directory / "zh").mkdir()
+    (directory / "zh" / "index.html").write_text("x", encoding="utf-8")
+    index_renderer.render(tmp_path / "results", site)
+
+    chinese = (site / "zh" / "index.html").read_text(encoding="utf-8")
+    assert "0.6.0 → 0.7.1b0" in chinese, "标题与语言无关（取自对比结果）"
+    assert "两侧自检均通过" in chinese
+    assert 'href="../compare-zoo-framework-0.6.0--zoo-framework-0.7.1b0/zh/index.html"' in chinese
 
 
 def test_index_omits_compare_directories_without_a_page(tmp_path: Path) -> None:
     """只有目录、没有对比页时不进列表——链接不能指向空处。"""
     (tmp_path / "site" / "compare-a--b").mkdir(parents=True)
 
-    page = index_renderer.render(tmp_path / "results", tmp_path / "site").read_text(
-        encoding="utf-8"
-    )
+    index_renderer.render(tmp_path / "results", tmp_path / "site")
 
-    assert "compare-card" not in page
+    for page in ("index.html", "zh/index.html"):
+        html = (tmp_path / "site" / page).read_text(encoding="utf-8")
+        assert "compare-card" not in html
 
 
 def test_compare_card_does_not_fabricate_a_trust_verdict(tmp_path: Path) -> None:
@@ -267,11 +319,12 @@ def test_compare_card_does_not_fabricate_a_trust_verdict(tmp_path: Path) -> None
     directory.mkdir(parents=True)
     (directory / "index.html").write_text("x", encoding="utf-8")
 
-    page = index_renderer.render(tmp_path / "results", site).read_text(encoding="utf-8")
+    page = index_renderer.render(tmp_path / "results", site)
+    html = page.read_text(encoding="utf-8")
 
-    assert "compare-card" in page, "对比页存在就该能进得去"
-    assert "两侧自检均通过" not in page
-    assert "不作数" not in page, "读不到状态时既不能说通过、也不能说未通过"
+    assert "compare-card" in html, "对比页存在就该能进得去"
+    assert "both sides passed self-check" not in html
+    assert "does not count" not in html, "读不到状态时既不能说通过、也不能说未通过"
 
 
 def test_index_ships_the_stylesheet(tmp_path: Path) -> None:

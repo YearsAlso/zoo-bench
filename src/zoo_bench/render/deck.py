@@ -25,6 +25,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ..i18n import HTML_LANGS, LANG_ZH, t
+from . import links
 from .assets import (
     DECK_CHROME_HTML,
     DECK_FRAMEWORK_CSS,
@@ -33,21 +35,21 @@ from .assets import (
     deck_asset,
 )
 from .blocks import (
-    APPENDIX_SECTION_PREFIX,
     BULLETS,
-    CHART_SECTION_TITLE,
-    CONCLUSION_SECTION_TITLE,
-    DIMENSION_SECTION_PREFIX,
     HEADING,
     IMAGE,
     NOTE,
     PARAGRAPH,
     TABLE,
-    UNFAVORABLE_SECTION_TITLE,
     Block,
+    appendix_section_prefix,
+    chart_section_title,
+    conclusion_section_title,
+    dimension_section_prefix,
     format_ratio,
     format_seconds,
     repository_relative_path,
+    unfavorable_section_title,
 )
 from .html import inline
 
@@ -67,8 +69,7 @@ _CHARS_PER_ROW = 64
 SLIDES_PER_SECTION = 2
 
 #: 不设上限的章节：不利数据在 deck 里必须**覆盖完整**（spec 的「不利数据不因版面而变小」），
-#: 分页续排到底、不截断。
-_UNLIMITED_SECTIONS = frozenset({UNFAVORABLE_SECTION_TITLE})
+#: 分页续排到底、不截断。判断在 :func:`_content_slides` 里按当场语言取题目比对。
 
 #: 单段散文最多占几行。留出余量给标题与页脚，故小于整页上限。
 _PROSE_ROWS = SLIDE_ROW_CAP - 4
@@ -148,6 +149,18 @@ _EXTRA_CSS = """
     @media (prefers-reduced-motion: reduce) {
       .slide > *, .slide .bar { animation: none !important; }
     }
+
+    /* ── 语言切换（页首右上角）──────────────
+       fixed 定位挂在 stage 外面：stage 会被 JS 缩放适配视口，放进 stage 里的元素会跟着变形。 */
+    .lang-switch {
+      position: fixed; top: 14px; right: 18px; z-index: 100;
+      font-size: 14px;
+    }
+    .lang-switch a {
+      color: var(--muted); text-decoration: none;
+      padding: 4px 12px; border: 1px solid var(--border-c); border-radius: 999px;
+    }
+    .lang-switch a:hover { color: var(--accent); }
 """
 
 #: 追加在 vendored 框架脚本之后的交互层：滚轮翻页 + 入场动画。
@@ -315,18 +328,22 @@ class _ChartSpec:
         numeric: 取用于画条的数值（秒 / 任务每秒）。
         display: 条形旁打印的文字（含单位）——条形只表达相对长短，精度由它承担。
         higher_is_better: 数值越大越好（吞吐）。**决定倍数怎么算**：条形一律"越长越差"。
-        legend: 该维度这一列是什么的名目。
+        legend_key: 该维度这一列是什么的名目——存**目录键**，渲染时按语言解析。
     """
 
     numeric: Callable[[dict[str, Any]], float | None]
-    display: Callable[[dict[str, Any]], str]
+    display: Callable[[dict[str, Any], str], str]
     higher_is_better: bool
-    legend: str
+    legend_key: str
 
 
-def _format_rate(value: float | None) -> str:
+def _format_rate(value: float | None, lang: str) -> str:
     """吞吐 -> 任务/秒。带千位分隔，因为这一列从 5,673 到 319,989。"""
-    return "—" if value is None else f"{value:,.0f} 任务/秒"
+    return (
+        t("blocks.empty_marker", lang)
+        if value is None
+        else f"{value:,.0f} {t('unit.tasks_per_second', lang)}"
+    )
 
 
 def _latency_median(row: dict[str, Any]) -> float | None:
@@ -341,21 +358,21 @@ def _latency_median(row: dict[str, Any]) -> float | None:
 _CHART_SPECS: dict[str, _ChartSpec] = {
     "latency": _ChartSpec(
         numeric=_latency_median,
-        display=lambda row: format_seconds(_latency_median(row)),
+        display=lambda row, lang: format_seconds(_latency_median(row), lang),
         higher_is_better=False,
-        legend="端到端 / 并发度",
+        legend_key="deck.legend.latency",
     ),
     "overhead": _ChartSpec(
         numeric=lambda row: row.get("framework_overhead_seconds"),
-        display=lambda row: format_ratio(row.get("framework_overhead_ratio")),
+        display=lambda row, lang: format_ratio(row.get("framework_overhead_ratio"), lang),
         higher_is_better=False,
-        legend="框架自身开销",
+        legend_key="deck.legend.overhead",
     ),
     "throughput": _ChartSpec(
         numeric=lambda row: row.get("throughput_per_second"),
-        display=lambda row: _format_rate(row.get("throughput_per_second")),
+        display=lambda row, lang: _format_rate(row.get("throughput_per_second"), lang),
         higher_is_better=True,
-        legend="吞吐",
+        legend_key="deck.legend.throughput",
     ),
 }
 
@@ -560,18 +577,34 @@ def _subject_version(model: dict[str, Any]) -> str | None:
     return (environment.get("subject") or {}).get("dist_version")
 
 
-def _title(model: dict[str, Any]) -> str:
+def _join(items: list[str], lang: str) -> str:
+    """并列项的连接符按语言取：中文用顿号，英文用逗号。"""
+    return ("、" if lang == LANG_ZH else ", ").join(items)
+
+
+def _sep(lang: str) -> str:
+    """eyebrow 的小间隔符。英文的字符门禁只放行 ASCII，间隔点（U+00B7）退成连字符。"""
+    return " · " if lang == LANG_ZH else " - "
+
+
+def _title(model: dict[str, Any], lang: str) -> str:
     version = _subject_version(model)
-    return f"zoo-framework {version} 性能评测" if version else "zoo-framework 性能评测"
+    return (
+        t("deck.title.versioned", lang, version=version) if version else t("deck.title.plain", lang)
+    )
 
 
-def _cover_heading(model: dict[str, Any]) -> str:
+def _cover_heading(model: dict[str, Any], lang: str) -> str:
     """封面的标题分两行（型号一行、评测名一行）——一行摆不下时字会缩到看不清。"""
     version = _subject_version(model)
-    return f"zoo-framework {version}\n性能评测" if version else "zoo-framework\n性能评测"
+    return (
+        t("deck.cover.heading.versioned", lang, version=version)
+        if version
+        else t("deck.cover.heading.plain", lang)
+    )
 
 
-def _cover_slide(model: dict[str, Any], subject: str | None) -> Slide:
+def _cover_slide(model: dict[str, Any], subject: str | None, lang: str) -> Slide:
     environment = model.get("environment") or {}
     hardware = environment.get("hardware") or {}
     run = model.get("run") or {}
@@ -584,7 +617,7 @@ def _cover_slide(model: dict[str, Any], subject: str | None) -> Slide:
         for row in dimension.get("rows", [])
     }
     others = sorted(adapter for adapter in adapters if adapter != subject)
-    eyebrow = " · ".join(
+    eyebrow = _sep(lang).join(
         part
         for part in (
             "zoo-bench",
@@ -595,69 +628,69 @@ def _cover_slide(model: dict[str, Any], subject: str | None) -> Slide:
     )
 
     return Slide(
-        label="封面",
+        label=t("deck.cover.label", lang),
         tone="dark",
         layout="hero center",
         eyebrow=eyebrow,
-        heading=_cover_heading(model),
+        heading=_cover_heading(model, lang),
         heading_class="h-hero",
         heading_tag="h1",
         # 没有对照方案时如实说"这份报告撑不起对比"，而不是拼出"与  共 0 个"这种空话
         lead=(
-            f"与 {'、'.join(others)} 共 {len(others)} 个对照方案的同口径对比；"
-            "全部数值由 zoo-bench 在本机重新测量、逐档公开，包括本框架输掉的档位。"
+            t(
+                "deck.cover.lead.with_others",
+                lang,
+                count=len(others),
+                baselines=_join(others, lang),
+            )
             if others
-            else "本轮的对照方案清单为空：只有被测框架自己的数，不足以支撑横向对比。"
+            else t("deck.cover.lead.no_others", lang)
         ),
         source=(
-            f"原始数据：`{repository_relative_path(str(source['path']))}`"
+            t("deck.cover.source", lang, path=repository_relative_path(str(source["path"])))
             if source.get("path")
-            else "原始数据出处未记录"
+            else t("deck.cover.source.unrecorded", lang)
         ),
-        notes="开场：强调同口径、可复现，为后面所有数字建立可信度。",
+        notes=t("deck.cover.notes", lang),
     )
 
 
-def _content_slides(section: _Section) -> list[Slide]:
+def _content_slides(section: _Section, lang: str) -> list[Slide]:
     """一个章节 -> 一到多页；超过每节上限的部分由一页指引送去全文。"""
     pieces = _section_pieces(section.blocks)
     if not pieces:
         return []
 
     chunks = _chunk(pieces)
-    limit = len(chunks) if section.title in _UNLIMITED_SECTIONS else SLIDES_PER_SECTION
+    limit = len(chunks) if section.title == unfavorable_section_title(lang) else SLIDES_PER_SECTION
     truncated = len(chunks) > limit
 
     slides: list[Slide] = []
     for index, chunk in enumerate(chunks[:limit]):
-        suffix = "" if index == 0 else "（续）"
+        suffix = "" if index == 0 else t("deck.content.suffix", lang)
         slides.append(
             Slide(
-                label=f"{section.title}{suffix}" or "正文",
-                eyebrow=section.title if index else "zoo-bench 报告",
+                label=f"{section.title}{suffix}" or t("deck.content.label.fallback", lang),
+                eyebrow=section.title if index else t("deck.content.eyebrow.default", lang),
                 heading=f"{section.title}{suffix}" if section.title else "",
                 body=_chunk_html(chunk),
-                source=f"数据：{section.title}",
+                source=t("deck.content.source", lang, section=section.title),
             )
         )
     if truncated:
-        slides.append(_pointer_slide_for(section, len(chunks) - limit))
+        slides.append(_pointer_slide_for(section, len(chunks) - limit, lang))
     return slides
 
 
-def _pointer_slide_for(section: _Section, dropped: int) -> Slide:
+def _pointer_slide_for(section: _Section, dropped: int, lang: str) -> Slide:
     """本章装不下的那部分明细去哪找——**点名章节**，不写"见报告其余部分"。"""
     return Slide(
-        label=f"{section.title}·明细指引",
+        label=t("deck.pointer.label", lang, section=section.title),
         eyebrow=section.title,
-        heading="本章其余明细在全文里",
-        lead=(
-            f"幻灯片为了「一页一个结论」只放了本章的前 "
-            f"{SLIDES_PER_SECTION} 页；余下 {dropped} 页的逐单元数值、分位数与原始样本"
-            "都在全文的同一章节里，逐字可核。"
-        ),
-        source=f"全文：同目录 `report.md` 的「{section.title}」章节",
-        notes="被压缩的只有排版，没有数值。",
+        heading=t("deck.pointer.heading", lang),
+        lead=t("deck.pointer.lead", lang, cap=SLIDES_PER_SECTION, dropped=dropped),
+        source=t("deck.pointer.source", lang, section=section.title),
+        notes=t("deck.pointer.notes", lang),
     )
 
 
@@ -702,7 +735,9 @@ def _concurrency_of(rows: list[dict[str, Any]]) -> int:
     return min(concurrency for concurrency, count in counts.items() if count == top)
 
 
-def _chart_groups(rows: list[dict[str, Any]], spec: _ChartSpec, subject: str) -> list[_BarGroup]:
+def _chart_groups(
+    rows: list[dict[str, Any]], spec: _ChartSpec, subject: str, lang: str
+) -> list[_BarGroup]:
     """把同一并发度下的行按档位分组；**组内被测框架排最前**（读者拿它比别的）。"""
     by_key = {(row["adapter"], row["body_tier_us"]): row for row in rows}
     groups: list[_BarGroup] = []
@@ -717,18 +752,18 @@ def _chart_groups(rows: list[dict[str, Any]], spec: _ChartSpec, subject: str) ->
             key=lambda row: (row["adapter"] != subject, row["adapter"]),
         )
         bars = tuple(
-            (multiple, row["adapter"], spec.display(row))
+            (multiple, row["adapter"], spec.display(row, lang))
             for row in members
             if (value := spec.numeric(row)) is not None
             and (multiple := _multiple(spec, value, base))
         )
         if bars:
-            groups.append(_BarGroup(f"执行体 {tier:g} 微秒", bars))
+            groups.append(_BarGroup(t("deck.chart.group_tier", lang, tier=tier), bars))
     return groups
 
 
 def _chart_slides(
-    subject: str | None, key: str, dimension: dict[str, Any], spec: _ChartSpec
+    subject: str | None, key: str, dimension: dict[str, Any], spec: _ChartSpec, lang: str
 ) -> list[Slide]:
     """一个度量维度的条形图：一个并发度、全部方案、全部档位，装不下就续排。"""
     if subject is None:
@@ -739,7 +774,7 @@ def _chart_slides(
 
     concurrency = _concurrency_of(rows)
     rows = [row for row in rows if int(row["concurrency"]) == concurrency]
-    groups = _chart_groups(rows, spec, subject)
+    groups = _chart_groups(rows, spec, subject, lang)
     if not groups:
         return []
 
@@ -753,7 +788,16 @@ def _chart_slides(
             continue
         parts = [group.bars[i : i + width] for i in range(0, len(group.bars), width)]
         expanded += [
-            _BarGroup(f"{group.label}（{index}/{len(parts)}）", part)
+            _BarGroup(
+                t(
+                    "deck.chart.group_part",
+                    lang,
+                    label=group.label,
+                    index=index,
+                    total=len(parts),
+                ),
+                part,
+            )
             for index, part in enumerate(parts, start=1)
         ]
 
@@ -778,8 +822,9 @@ def _chart_slides(
     slides: list[Slide] = []
     for index, groups_in_slide in enumerate(chunked):
         cap = _nice_max(max(multiple for group in groups_in_slide for multiple, _, _ in group.bars))
+        legend = t(spec.legend_key, lang)
         lines = [
-            f'<p class="eyebrow">并发度 {concurrency} · {spec.legend}</p>',
+            f'<p class="eyebrow">{t("deck.chart.eyebrow", lang, concurrency=concurrency, legend=legend)}</p>',
             f'<div class="chart" style="--max: {cap:g}">',
         ]
         for group in groups_in_slide:
@@ -789,32 +834,30 @@ def _chart_slides(
         lines.append("</div>")
         lines.append(
             '<div class="legend">'
-            '<span class="legend-chip"><i class="c-zoo"></i>被测框架</span>'
-            '<span class="legend-chip"><i class="c-ra"></i>对照方案</span>'
-            '<span class="legend-chip">条形 = 相对被测框架的倍数，1.0 为持平，越长越差</span>'
+            f'<span class="legend-chip"><i class="c-zoo"></i>{t("deck.chart.chip.subject", lang)}</span>'
+            f'<span class="legend-chip"><i class="c-ra"></i>{t("deck.chart.chip.baseline", lang)}</span>'
+            f'<span class="legend-chip">{t("deck.chart.chip.meaning", lang)}</span>'
             "</div>"
         )
-        suffix = "" if index == 0 else "（续）"
-        notes = ["条形只表达相对长短，每根旁边的数字才是该点的实测值。"]
+        suffix = "" if index == 0 else t("deck.content.suffix", lang)
+        notes = [t("deck.chart.note.bars", lang)]
         if withheld:
-            notes.append(f"另有 {withheld} 个单元格无可读开销，未入图（见口径局限）。")
+            notes.append(t("deck.chart.note.withheld", lang, count=withheld))
         slides.append(
             Slide(
                 label=f"{title}{suffix}",
-                eyebrow=f"{DIMENSION_SECTION_PREFIX}{title}",
-                heading=f"{title}：并发度 {concurrency}{suffix}",
+                eyebrow=dimension_section_prefix(lang) + title,
+                heading=t("deck.chart.heading", lang, title=title, concurrency=concurrency)
+                + suffix,
                 body="\n".join(lines),
-                source=(
-                    f"数据：zoo-bench「{title}」· 并发度 {concurrency} · "
-                    "逐单元数值与分位数见 report.md 的同一章节"
-                ),
+                source=t("deck.chart.source", lang, title=title, concurrency=concurrency),
                 notes=" ".join(notes),
             )
         )
     return slides
 
 
-def _stat_slides(model: dict[str, Any], subject: str | None) -> list[Slide]:
+def _stat_slides(model: dict[str, Any], subject: str | None, lang: str) -> list[Slide]:
     """核心结论的大数字：**最大的执行体档位**上，被测框架的开销占比。
 
     取最大档位不是挑对自己有利的数——报告自己的选型框架就是"多大的执行体时长下开销才可忽略"
@@ -845,43 +888,54 @@ def _stat_slides(model: dict[str, Any], subject: str | None) -> list[Slide]:
         (row for row in same_cell if row["adapter"] != subject),
         key=lambda row: row["adapter"],
     )
-    comparison = " · ".join(
-        f"{row['adapter']} {format_ratio(row['framework_overhead_ratio'])}" for row in rivals
+    comparison = _join(
+        [
+            f"{row['adapter']} {format_ratio(row['framework_overhead_ratio'], lang)}"
+            for row in rivals
+        ],
+        lang,
     )
     # **同档的结论必须和大数字一起给**：一个 300px 的数字单摆着，读者会读成"这就是最低的那个"。
     # 实测该档位有三家比被测框架更低，故这一句不是客套而是纠偏。
     lower = [row for row in rivals if float(row["framework_overhead_ratio"]) < ratio]
     verdict = (
-        "该档位被测框架的占比最低。"
+        t("deck.stat.verdict.lowest", lang)
         if not lower
-        else f"该档位有 {len(lower)} 个方案更低："
-        + "、".join(str(row["adapter"]) for row in lower)
-        + "。"
+        else t(
+            "deck.stat.verdict.lower",
+            lang,
+            count=len(lower),
+            adapters=_join([str(row["adapter"]) for row in lower], lang),
+        )
     )
-    caption = f"执行体 {tier:g} 微秒 时，{subject} 的框架自身开销占比。<br>{inline(verdict)}" + (
-        f'<br><span class="dim">同档对比：{inline(comparison)}</span>' if comparison else ""
+    caption = (
+        t("deck.stat.caption", lang, tier=tier, subject=subject)
+        + f"<br>{inline(verdict)}"
+        + (
+            f'<br><span class="dim">'
+            f"{inline(t('deck.stat.same_tier', lang, comparison=comparison))}</span>"
+            if comparison
+            else ""
+        )
     )
 
     return [
         Slide(
-            label="核心结论",
+            label=t("deck.stat.label", lang),
             layout="hero center",
-            eyebrow=f"{CONCLUSION_SECTION_TITLE} · 框架自身开销占比",
+            eyebrow=conclusion_section_title(lang) + _sep(lang) + t("deck.stat.eyebrow", lang),
             heading="",
             body=(
                 f'<div class="stat-num">{ratio * 100:.2f}<span class="unit">%</span></div>'
                 f'<p class="stat-caption">{caption}</p>'
             ),
-            source=(
-                f"数据：zoo-bench「框架自身开销占比」· 并发度 {concurrency} · "
-                f"执行体 {tier:g} 微秒 档"
-            ),
-            notes="取所测最大的执行体档位：报告自己的选型框架就是「多大的任务才划算」。",
+            source=t("deck.stat.source", lang, concurrency=concurrency, tier=tier),
+            notes=t("deck.stat.notes", lang),
         )
     ]
 
 
-def _unfavorable_summary_slides(model: dict[str, Any]) -> list[Slide]:
+def _unfavorable_summary_slides(model: dict[str, Any], lang: str) -> list[Slide]:
     """劣势的**归类页**：按是哪个对照方案赢的归组，点出最差的那一格。"""
     items = (model.get("unfavorable") or {}).get("items") or []
     if not items:
@@ -895,58 +949,82 @@ def _unfavorable_summary_slides(model: dict[str, Any]) -> list[Slide]:
     for baseline, rows in sorted(by_baseline.items()):
         worst = min(rows, key=lambda row: float(row["baseline_ratio_vs_subject"]))
         gap = 1 / float(worst["baseline_ratio_vs_subject"])
-        cells = "、".join(
-            f"并发 {int(row['concurrency'])} · {row['body_tier_us']:g} 微秒"
-            for row in sorted(rows, key=lambda row: (int(row["concurrency"]), row["body_tier_us"]))
+        cells = _join(
+            [
+                t(
+                    "deck.unfavorable.cell",
+                    lang,
+                    concurrency=int(row["concurrency"]),
+                    tier=row["body_tier_us"],
+                )
+                for row in sorted(
+                    rows, key=lambda row: (int(row["concurrency"]), row["body_tier_us"])
+                )
+            ],
+            lang,
         )
         cards.append(
             '<div class="pt">'
-            f"<h3>{inline(baseline)} · {len(rows)} 个档位更快</h3>"
-            f'<p>最差 <span class="num">{gap:.2f}x</span>（并发 {int(worst["concurrency"])} · '
-            f"{worst['body_tier_us']:g} 微秒）。全部档位：{inline(cells)}</p>"
+            f"<h3>{t('deck.unfavorable.card.title', lang, baseline=inline(baseline), count=len(rows))}</h3>"
+            f"<p>{t('deck.unfavorable.card.body', lang, gap=f'{gap:.2f}', concurrency=int(worst['concurrency']), tier=worst['body_tier_us'], cells=inline(cells))}</p>"
             "</div>"
         )
 
     return [
         Slide(
-            label="劣势归类",
+            label=t("deck.unfavorable.label", lang),
             layout="hero",
-            eyebrow=f"{UNFAVORABLE_SECTION_TITLE} · 归类",
-            heading=f"被测框架在 {len(items)} 个档位上更慢，来自 {len(by_baseline)} 个对照方案。",
+            eyebrow=unfavorable_section_title(lang)
+            + _sep(lang)
+            + t("deck.unfavorable.eyebrow", lang),
+            heading=t("deck.unfavorable.heading", lang, count=len(items), rivals=len(by_baseline)),
             body=f'<div class="pt-grid">{"".join(cards)}</div>',
-            source="数据：zoo-bench「公开的不利数据」· 逐档明细见其后的页与 report.md",
-            notes="先把劣势归纳清楚，再逐档列出——不按重要性截断。",
+            source=t("deck.unfavorable.source", lang),
+            notes=t("deck.unfavorable.notes", lang),
         )
     ]
 
 
-def _pointer_slides(model: dict[str, Any]) -> list[Slide]:
+def _pointer_slides(model: dict[str, Any], lang: str) -> list[Slide]:
     """收尾：deck 装不下的明细去哪找，说清楚。"""
     run = model.get("run") or {}
     source = model.get("source") or {}
     items = [
-        "逐单元明细（分位数、离散度、每轮原始样本）：同目录的 `report.md`",
-        "图表（SVG 与 PNG）：同目录的 `figures/`，另见 `report.pdf`",
+        t("deck.pointer_page.item.markdown", lang),
+        t("deck.pointer_page.item.figures", lang),
     ]
     if source.get("path"):
-        items.append(f"原始留档：`{repository_relative_path(str(source['path']))}`")
+        items.append(
+            t(
+                "deck.pointer_page.item.archive",
+                lang,
+                path=repository_relative_path(str(source["path"])),
+            )
+        )
     if run.get("unit_count") is not None:
-        items.append(f"本轮有效单元 {run['unit_count']}，失败单元 {run.get('failed_unit_count')}")
+        items.append(
+            t(
+                "deck.pointer_page.item.units",
+                lang,
+                total=run["unit_count"],
+                failed=run.get("failed_unit_count"),
+            )
+        )
 
     return [
         Slide(
-            label="全文与原始数据",
+            label=t("deck.pointer_page.label", lang),
             tone="dark",
             layout="center",
-            eyebrow="附录",
-            heading="每一页都可在全文里逐字复核",
-            lead="幻灯片为了「一页一个结论」而压缩了篇幅；被压缩的只有排版，没有数值。",
+            eyebrow=t("deck.pointer_page.eyebrow", lang),
+            heading=t("deck.pointer_page.heading", lang),
+            lead=t("deck.pointer_page.lead", lang),
             body=(
                 '<ul class="deck-list">'
                 + "".join(f"<li>{inline(item)}</li>" for item in items)
                 + "</ul>"
             ),
-            source="明细有一百多行，压进幻灯片等于让读者失去核对的手段。",
+            source=t("deck.pointer_page.source", lang),
         )
     ]
 
@@ -979,13 +1057,13 @@ def _render_slide(slide: Slide, *, index: int) -> str:
     return "\n".join(lines)
 
 
-def _assemble(slides: list[Slide], title: str) -> str:
+def _assemble(slides: list[Slide], title: str, lang: str) -> str:
     """把幻灯片、框架块与逐页样式拼成一份完整的 deck 文档。"""
     body = "\n".join(_render_slide(slide, index=index) for index, slide in enumerate(slides))
     return "\n".join(
         [
             "<!doctype html>",
-            '<html lang="zh-CN" data-od-deck-protocol="1">',
+            f'<html lang="{HTML_LANGS[lang]}" data-od-deck-protocol="1">',
             "<head>",
             '<meta charset="utf-8" />',
             '<meta name="viewport" content="width=device-width, initial-scale=1" />',
@@ -999,6 +1077,10 @@ def _assemble(slides: list[Slide], title: str) -> str:
             "</style>",
             "</head>",
             "<body>",
+            # 语言切换进页首（spec 场景「语言互链可达」）：deck 是全屏翻页形态，没有页头可用，
+            # 故固定在右上角——读者第一眼扫到标题的位置就是回家的路。
+            f'<nav class="lang-switch"><a href="{html_module.escape(links.language_switch_href(lang), quote=True)}">'
+            f"{inline(links.language_switch_label(lang))}</a></nav>",
             '<div class="deck-shell">',
             '<div class="deck-stage" id="deck-stage">',
             "",
@@ -1036,46 +1118,46 @@ def render_deck(model: dict[str, Any], blocks: list[Block], *, title: str | None
         DeckOverflowError: 有内容装不进一页且无法再切。
     """
     subject = model.get("subject")
-    resolved_title = title or _title(model)
+    lang = model["lang"]
+    resolved_title = title or _title(model, lang)
     dimensions = model.get("dimensions") or {}
 
-    slides: list[Slide] = [_cover_slide(model, subject)]
+    slides: list[Slide] = [_cover_slide(model, subject, lang)]
     for section in _sections(blocks):
         if section.heading.level == 1:
             # 一级标题是报告的题头，封面已承担
             continue
-        if (
-            section.title.startswith(APPENDIX_SECTION_PREFIX)
-            or section.title == CHART_SECTION_TITLE
-        ):
+        if section.title.startswith(
+            appendix_section_prefix(lang)
+        ) or section.title == chart_section_title(lang):
             # 附录的逐单元明细与图表章不进幻灯片：明细交给 report.md（末页给指针），
             # 图表由本模块的条形自己编码同一批数值
             continue
 
-        if section.title.startswith(DIMENSION_SECTION_PREFIX):
-            slides += _dimension_chart_slides(section, dimensions, subject)
-        if section.title == UNFAVORABLE_SECTION_TITLE:
-            slides += _unfavorable_summary_slides(model)
+        if section.title.startswith(dimension_section_prefix(lang)):
+            slides += _dimension_chart_slides(section, dimensions, subject, lang)
+        if section.title == unfavorable_section_title(lang):
+            slides += _unfavorable_summary_slides(model, lang)
 
-        slides += _content_slides(section)
+        slides += _content_slides(section, lang)
 
-        if section.title == CONCLUSION_SECTION_TITLE:
-            slides += _stat_slides(model, subject)
+        if section.title == conclusion_section_title(lang):
+            slides += _stat_slides(model, subject, lang)
 
-    slides += _pointer_slides(model)
-    return _assemble(slides, resolved_title)
+    slides += _pointer_slides(model, lang)
+    return _assemble(slides, resolved_title, lang)
 
 
 def _dimension_chart_slides(
-    section: _Section, dimensions: dict[str, Any], subject: str | None
+    section: _Section, dimensions: dict[str, Any], subject: str | None, lang: str
 ) -> list[Slide]:
     """该章节若是某个度量维度，给它配条形图页（排在数值表之前）。"""
-    title = section.title[len(DIMENSION_SECTION_PREFIX) :]
+    title = section.title[len(dimension_section_prefix(lang)) :]
     for key, dimension in dimensions.items():
         if not isinstance(dimension, dict) or dimension.get("title") != title:
             continue
         spec = _CHART_SPECS.get(key)
         if spec is None:
             return []
-        return _chart_slides(subject, key, dimension, spec)
+        return _chart_slides(subject, key, dimension, spec, lang)
     return []

@@ -31,60 +31,76 @@ from typing import Any
 
 from zoo_framework.core.waiter.base_waiter import BaseWaiter
 
+from .i18n import LANG_ZH, t
+
 #: 上一代驱动面：``workers`` 是可写属性，完成信号只能取自框架内部回调。
 GENERATION_PREVIOUS = "previous"
 
 #: 当前代驱动面：``core``（调度内核）+ ``model``（调度模型）结构，完成信号取自结果响应器。
 GENERATION_CURRENT = "current"
 
-#: 世代标识 -> 可读说明。说明会随报告发布，故用词必须是**读者能据此判断适用性**的。
+#: 世代标识 -> 目录键。说明会随报告发布，故用词必须是**读者能据此判断适用性**的；
+#: 存键而不是散文，留档才是语言无关的数据（design D8）。
 GENERATION_LABELS: dict[str, str] = {
-    GENERATION_PREVIOUS: "上一代驱动面（workers 为可写属性，完成信号取自框架内部回调）",
-    GENERATION_CURRENT: "当前代驱动面（调度内核 core + 调度模型 model，完成信号取自结果响应器）",
+    GENERATION_PREVIOUS: "generations.label.previous",
+    GENERATION_CURRENT: "generations.label.current",
 }
 
-#: 判定为**当前代**所需的驱动面形态。值是**期望的探测结果**。
+#: 判定为**当前代**所需的驱动面形态。键是目录键（探测项名与形态描述都键化），值是**期望的探测结果**。
 CURRENT_REQUIRED: dict[str, bool] = {
-    "构造参数接受 model_name": True,
-    "workers 可赋值": False,
-    "调度内核 core.set_workers 可调用": True,
-    "调度内核 core.is_inflight 可调用": True,
-    "停机入口 shutdown 可调用": True,
+    "generations.capability.model_name_param": True,
+    "generations.capability.workers_assignable": False,
+    "generations.capability.core_set_workers": True,
+    "generations.capability.core_is_inflight": True,
+    "generations.capability.shutdown": True,
 }
 
 #: 判定为**上一代**所需的驱动面形态。
 PREVIOUS_REQUIRED: dict[str, bool] = {
-    "workers 可赋值": True,
-    "资源池属性 resource_pool 存在": True,
-    "完成回调 worker_running_callback 可调用": True,
+    "generations.capability.workers_assignable": True,
+    "generations.capability.resource_pool": True,
+    "generations.capability.worker_running_callback": True,
 }
+
+#: 形态描述：探测项的``(是否成立, 形态键, 形态参数)``里的后两项。
+_ASSIGNMENT_MISSING = ("generations.observed.absent", {})
+_ASSIGNMENT_ACCEPTED = ("generations.observed.assignable", {})
+_CALLABLE = ("generations.observed.callable", {})
+_NOT_CALLABLE = ("generations.observed.not_callable", {})
+_PRESENT = ("generations.observed.present", {})
+_ABSENT = ("generations.observed.absent", {})
 
 
 class GenerationNotDrivable(RuntimeError):
     """被测框架的驱动面与本 harness 已知的任何一代都不匹配。
 
     刻意是异常而不是"退回某一代"：静默退回会产出与框架实际驱动方式不符的数字，而那种数字
-    看起来一切正常。
+    看起来一切正常。异常携带的是**语言无关的探测载荷**，CLI 侧按中文渲染（本项目的 CLI 面向
+    维护者，保持中文）。
     """
 
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(format_mismatch(payload, LANG_ZH))
 
-def _probe_assignment(target: Any, attribute: str) -> tuple[bool, str]:
-    """探测某属性是否接受赋值，并给出可读的形态描述。"""
+
+def _probe_assignment(target: Any, attribute: str) -> tuple[bool, tuple[str, dict[str, Any]]]:
+    """探测某属性是否接受赋值，并给出**键化的**形态描述。"""
     if not hasattr(target, attribute):
-        return False, "不存在"
+        return False, _ASSIGNMENT_MISSING
     try:
         setattr(target, attribute, [])
     except Exception as exc:
-        return False, f"存在但拒绝赋值（{type(exc).__name__}）"
-    return True, "存在且接受赋值"
+        return False, ("generations.observed.rejected", {"exception": type(exc).__name__})
+    return True, _ASSIGNMENT_ACCEPTED
 
 
-def _probe_drive_surface() -> dict[str, tuple[bool, str]]:
+def _probe_drive_surface() -> dict[str, tuple[bool, tuple[str, dict[str, Any]]]]:
     """逐项探测被测框架的驱动面形态。
 
     Returns:
-        ``探测项 -> (是否成立, 可读的形态描述)``。形态描述刻意是**文本而不是布尔值**：
-        判定失败时那份说明要直接回答"探测了什么、结果如何"，否则排查只能靠猜。
+        ``探测项目录键 -> (是否成立, (形态目录键, 形态参数))``。形态描述刻意是**文本而不是
+        布尔值**：判定失败时那份说明要直接回答"探测了什么、结果如何"，否则排查只能靠猜。
     """
     waiter = BaseWaiter()
     core = getattr(waiter, "core", None)
@@ -98,26 +114,34 @@ def _probe_drive_surface() -> dict[str, tuple[bool, str]]:
     running_callback = callable(getattr(waiter, "worker_running_callback", None))
 
     return {
-        "构造参数接受 model_name": (accepts_model_name, "接受" if accepts_model_name else "不接受"),
-        "workers 可赋值": (assignable, workers_shape),
-        "调度内核 core.set_workers 可调用": (set_workers, "可调用" if set_workers else "不可调用"),
-        "调度内核 core.is_inflight 可调用": (
+        "generations.capability.model_name_param": (
+            accepts_model_name,
+            ("generations.observed.accepted", {})
+            if accepts_model_name
+            else ("generations.observed.not_accepted", {}),
+        ),
+        "generations.capability.workers_assignable": (assignable, workers_shape),
+        "generations.capability.core_set_workers": (
+            set_workers,
+            _CALLABLE if set_workers else _NOT_CALLABLE,
+        ),
+        "generations.capability.core_is_inflight": (
             is_inflight,
-            "可调用" if is_inflight else "不可调用",
+            _CALLABLE if is_inflight else _NOT_CALLABLE,
         ),
-        "停机入口 shutdown 可调用": (shutdown, "可调用" if shutdown else "不可调用"),
-        "资源池属性 resource_pool 存在": (
+        "generations.capability.shutdown": (shutdown, _CALLABLE if shutdown else _NOT_CALLABLE),
+        "generations.capability.resource_pool": (
             resource_pool,
-            "存在" if resource_pool else "不存在",
+            _PRESENT if resource_pool else _ABSENT,
         ),
-        "完成回调 worker_running_callback 可调用": (
+        "generations.capability.worker_running_callback": (
             running_callback,
-            "可调用" if running_callback else "不可调用",
+            _CALLABLE if running_callback else _NOT_CALLABLE,
         ),
     }
 
 
-def _classify(observed: dict[str, tuple[bool, str]]) -> str | None:
+def _classify(observed: dict[str, tuple[bool, tuple[str, dict[str, Any]]]]) -> str | None:
     """按探测结果判定世代；两者都不匹配时返回 None。"""
     for generation, required in (
         (GENERATION_CURRENT, CURRENT_REQUIRED),
@@ -128,27 +152,72 @@ def _classify(observed: dict[str, tuple[bool, str]]) -> str | None:
     return None
 
 
-def _mismatch_message(observed: dict[str, tuple[bool, str]]) -> str:
-    """驱动面无法识别时的失败说明：**逐项给出探测了什么、结果如何**。"""
+def mismatch_payload(
+    observed: dict[str, tuple[bool, tuple[str, dict[str, Any]]]],
+) -> dict[str, Any]:
+    """驱动面无法识别时的**语言无关**载荷：判据与探测结果都按目录键记，渲染时才解析。"""
+    return {
+        "detected": [
+            {
+                "capability": capability,
+                "observed": shape_key,
+                "observed_params": shape_params,
+            }
+            for capability, (_, (shape_key, shape_params)) in observed.items()
+        ],
+        "current_required": [
+            {"capability": capability, "expected": expected}
+            for capability, expected in CURRENT_REQUIRED.items()
+        ],
+        "previous_required": [
+            {"capability": capability, "expected": expected}
+            for capability, expected in PREVIOUS_REQUIRED.items()
+        ],
+    }
 
-    def requirements(required: dict[str, bool]) -> str:
-        return "；".join(f"{name}={expected}" for name, expected in required.items())
 
-    detected = "\n".join(f"  - {name}：{shape}" for name, (_, shape) in observed.items())
-    return (
-        "被测框架的驱动面与本 harness 已知的任何一代都不匹配，无法驱动。\n"
-        f"探测到的形态：\n{detected}\n"
-        f"当前代要求：{requirements(CURRENT_REQUIRED)}\n"
-        f"上一代要求：{requirements(PREVIOUS_REQUIRED)}\n"
-        "不会退回某一代的默认路径去测——那样得到的数字看起来正常，却对应框架并不具备的驱动方式。"
+def _requirement_line(item: dict[str, Any], lang: str) -> str:
+    """一条世代要求：``<探测项>=<期望的布尔值>``（布尔值本身是 ASCII，无需翻译）。"""
+    return f"{t(str(item['capability']), lang)}={item['expected']}"
+
+
+def format_mismatch(payload: dict[str, Any], lang: str) -> str:
+    """把驱动面无法识别的载荷渲染成逐项说明（**按语言解析**，CLI 与报告共用一套）。"""
+    requirements = list(payload.get("current_required") or [])
+    previous = list(payload.get("previous_required") or [])
+    detected = "\n".join(
+        t(
+            "generations.mismatch.detected_line",
+            lang,
+            capability=t(str(item["capability"]), lang),
+            observed=t(
+                str(item["observed"]),
+                lang,
+                **(item.get("observed_params") or {}),
+            ),
+        )
+        for item in payload.get("detected") or []
     )
+    return t(
+        "generations.mismatch",
+        lang,
+        detected=detected,
+        current_required=_clause_join([_requirement_line(i, lang) for i in requirements], lang),
+        previous_required=_clause_join([_requirement_line(i, lang) for i in previous], lang),
+    )
+
+
+def _clause_join(values: list[str], lang: str) -> str:
+    """句子级拼接：中文分号、英文分号加空格（与渲染层的 ``_list_join`` 同一规则）。"""
+    return "；".join(values) if lang == LANG_ZH else "; ".join(values)
 
 
 def probe_drive_generation() -> dict[str, Any]:
     """判定当前装着的被测框架提供哪一代的驱动面。
 
     Returns:
-        ``{"generation": 世代标识, "label": 可读说明, "capabilities": [{"capability", "observed"}]}``。
+        ``{"generation": 世代标识, "label": 说明的目录键, "capabilities": [{"capability",
+        "observed", "observed_params"}]}`` —— 全部是**目录键**，渲染时按语言解析。
 
     Raises:
         GenerationNotDrivable: 探测结果与任何已知世代都不匹配。
@@ -156,12 +225,17 @@ def probe_drive_generation() -> dict[str, Any]:
     observed = _probe_drive_surface()
     generation = _classify(observed)
     if generation is None:
-        raise GenerationNotDrivable(_mismatch_message(observed))
+        raise GenerationNotDrivable(mismatch_payload(observed))
 
     return {
         "generation": generation,
         "label": GENERATION_LABELS[generation],
         "capabilities": [
-            {"capability": name, "observed": shape} for name, (_, shape) in observed.items()
+            {
+                "capability": capability,
+                "observed": shape_key,
+                "observed_params": shape_params,
+            }
+            for capability, (_, (shape_key, shape_params)) in observed.items()
         ],
     }

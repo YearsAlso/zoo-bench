@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from zoo_bench import caliber
+from zoo_bench.i18n import LANG_ZH
 
 # ------------------------------------------------------------------ 判据
 
@@ -43,9 +44,7 @@ def test_a_negative_overhead_is_never_interpretable() -> None:
 
 def test_zero_overhead_is_interpretable() -> None:
     """恰为 0 仍可读：判否的门槛是"负"，不是"非正"。"""
-    assert caliber.overhead_is_interpretable(
-        concurrency=1, logical_cores=4, overhead_seconds=0.0
-    )
+    assert caliber.overhead_is_interpretable(concurrency=1, logical_cores=4, overhead_seconds=0.0)
 
 
 def test_missing_core_count_does_not_withhold_everything() -> None:
@@ -94,7 +93,7 @@ def test_the_reason_says_what_is_withheld_and_what_is_not() -> None:
 
     只说"该组不可读"会让读者以为整行数据都没了，从而放弃这一档位——而端到端与吞吐其实还在。
     """
-    reason = caliber.UNINTERPRETABLE_REASON
+    reason = caliber.uninterpretable_reason(LANG_ZH)
     assert "并行能力" in reason
     assert "端到端" in reason and "吞吐" in reason, "要说清哪些量仍然有效"
     assert "负" in reason, "要给出判否的证据形态，否则读者以为是阈值卡出来的"

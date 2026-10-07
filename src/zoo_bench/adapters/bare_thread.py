@@ -18,11 +18,7 @@ class BareThreadAdapter(BaseAdapter):
 
     name = "bare_thread"
     tier = Tier.BARE
-    notes = (
-        "每任务派生一个 threading.Thread，无池化、无复用；线程创建成本计入端到端。"
-        "收集执行体自报耗时用无锁的 list.append（GIL 下本身原子）——"
-        "**插桩不得给某一档加别档没有的成本**，否则对照就成了插桩的对照"
-    )
+    notes = "adapters.notes.bare_thread"
 
     def setup(self, *, workers: int) -> None:
         # workers 对本档无约束作用：并发度等于提交数。保留参数以符合契约。

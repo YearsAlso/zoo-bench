@@ -95,7 +95,9 @@ def parse_target(specifier: str) -> FrameworkTarget:
         name, _, version = text.partition("==")
         if not name.strip() or not version.strip():
             raise MatrixError(f"{specifier!r} 缺少包名或版本号")
-        return FrameworkTarget(specifier=text, name=name.strip(), kind="pypi", version=version.strip())
+        return FrameworkTarget(
+            specifier=text, name=name.strip(), kind="pypi", version=version.strip()
+        )
 
     raise MatrixError(
         f"{specifier!r} 无法识别：要么写成 `包名==版本`，要么写成 "

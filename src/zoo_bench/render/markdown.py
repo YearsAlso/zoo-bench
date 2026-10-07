@@ -59,4 +59,6 @@ def render_markdown(
     Returns:
         Markdown 文本。
     """
-    return blocks_to_markdown(build_blocks(model, charts, figures_rel=figures_rel))
+    return blocks_to_markdown(
+        build_blocks(model, charts, figures_rel=figures_rel, lang=model["lang"])
+    )

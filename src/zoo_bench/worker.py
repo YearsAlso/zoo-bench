@@ -159,7 +159,9 @@ _KINDS = {
     "attribution": probe_attribution_task,
 }
 
-_USAGE = "用法: python -m zoo_bench.worker <verify|measure|semantics|attribution> <spec-json> <out-path>"
+_USAGE = (
+    "用法: python -m zoo_bench.worker <verify|measure|semantics|attribution> <spec-json> <out-path>"
+)
 
 
 def main(argv: list[str] | None = None) -> int:

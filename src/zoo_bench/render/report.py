@@ -12,9 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..i18n import LANG_EN, LANG_ZH
 from .blocks import build_blocks
 from .charts import render_all
 from .deck import render_deck
+from .links import subtree_path
 from .markdown import blocks_to_markdown
 from .pdf import render_pdf
 
@@ -39,7 +41,7 @@ def render(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> di
     figures = directory / "figures"
 
     charts = render_all(model, figures, threshold=threshold)
-    blocks = build_blocks(model, charts)
+    blocks = build_blocks(model, charts, lang=model["lang"])
 
     html_path = directory / "index.html"
     markdown_path = directory / "report.md"
@@ -55,4 +57,28 @@ def render(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> di
         "pdf": pdf["pdf"],
         "font": pdf["font"],
         "charts": charts,
+    }
+
+
+def render_site(
+    models: dict[str, dict[str, Any]], outdir: str | Path, *, threshold: float
+) -> dict[str, dict[str, Any]]:
+    """一次写出整棵双语站点（design D3/D7）。
+
+    英文挂在 ``outdir`` 根、中文挂在 ``outdir/zh/``——两棵语言树互为镜像，各走一遍单语言
+    :func:`render`（图表、三种格式、PDF 字体规则都按各自语言来）。``models`` 必须同时给出
+    两种语言的模型：少一种等于"双语站点缺了一半"，让它 KeyError 比悄悄只出一半诚实。
+
+    Args:
+        models: ``{"en": 英文模型, "zh": 中文模型}``，由调用方各调一次 :func:`build_model` 得到。
+        outdir: 站点根目录。
+        threshold: 开销阈值（传给图表）。
+
+    Returns:
+        ``{"en": render 的返回值, "zh": render 的返回值}``。
+    """
+    root = Path(outdir)
+    return {
+        LANG_EN: render(models[LANG_EN], root, threshold=threshold),
+        LANG_ZH: render(models[LANG_ZH], root / subtree_path(LANG_ZH), threshold=threshold),
     }

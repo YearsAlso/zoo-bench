@@ -15,6 +15,7 @@ import pytest
 
 from zoo_bench import cli, storage
 from zoo_bench import matrix as matrix_module
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import html as html_renderer
 from zoo_bench.render import markdown as markdown_renderer
@@ -26,12 +27,17 @@ FRAMEWORK = "zoo-framework==9.9.9"
 
 def _model(*, ratio: float = 0.26, command: str = "zoo-bench run") -> dict[str, Any]:
     return {
+        "lang": LANG_ZH,
         "source": {"path": "results/x.json"},
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
             "os": {"system": "TestOS", "release": "1", "version": "1.0"},
             "python": {"version": "3.13.0", "implementation": "CPython", "executable": "/py"},
-            "subject": {"dist_version": "9.9.9", "module_version": "1.0", "note": "以发行元数据为准"},
+            "subject": {
+                "dist_version": "9.9.9",
+                "module_version": "1.0",
+                "note": "以发行元数据为准",
+            },
             "harness": {"version": "0.0.1", "commit": "deadbeef"},
             "command": command.split(),
         },
@@ -120,7 +126,9 @@ def _model(*, ratio: float = 0.26, command: str = "zoo-bench run") -> dict[str, 
 
 def test_blocks_cover_every_required_section() -> None:
     headings = [
-        block.text for block in blocks_module.build_blocks(_model(), []) if block.kind == blocks_module.HEADING
+        block.text
+        for block in blocks_module.build_blocks(_model(), [], lang=LANG_ZH)
+        if block.kind == blocks_module.HEADING
     ]
     for expected in (
         "zoo-bench 性能报告",
@@ -139,14 +147,16 @@ def test_blocks_cover_every_required_section() -> None:
 
 def test_blocks_are_output_agnostic() -> None:
     """块本身不该带任何输出格式的语法。"""
-    for block in blocks_module.build_blocks(_model(), []):
+    for block in blocks_module.build_blocks(_model(), [], lang=LANG_ZH):
         assert not block.text.startswith("#")
         assert "<" not in block.src
 
 
 def _html(model, charts=()):
     """报告页已是 deck 形态；本模块测的是站点首页与对比页仍在用的块 -> HTML 序列化。"""
-    return html_renderer.blocks_to_html(blocks_module.build_blocks(model, list(charts)))
+    return html_renderer.blocks_to_html(
+        blocks_module.build_blocks(model, list(charts), lang=LANG_ZH)
+    )
 
 
 def test_repository_relative_path_strips_the_build_machine() -> None:
@@ -161,9 +171,7 @@ def test_repository_relative_path_strips_the_build_machine() -> None:
         convert(r"F:\Python\zoo\zoo-bench\results\zoo-framework-0.8.0\20260101T000000Z.json")
         == "results/zoo-framework-0.8.0/20260101T000000Z.json"
     )
-    assert (
-        convert("/home/runner/work/zoo-bench/zoo-bench/results/x.json") == "results/x.json"
-    )
+    assert convert("/home/runner/work/zoo-bench/zoo-bench/results/x.json") == "results/x.json"
     # 路径里没有 results 段时**原样返回**：不编一个不存在的相对位置
     assert convert("/tmp/data.json") == "/tmp/data.json"
 
@@ -253,11 +261,11 @@ def test_time_units_are_actually_converted() -> None:
     真事故的守卫：毫秒分支曾印原始秒数却标 "ms"，2.7 毫秒被印成 "0.003 ms"——读起来像 3 微秒，
     **差 1000 倍**。这类错误不会被"章节都在"之类的断言发现，只能逐档断言数值本身。
     """
-    assert blocks_module.format_seconds(2.7) == "2.700 秒"
-    assert blocks_module.format_seconds(0.0027) == "2.700 毫秒"
-    assert blocks_module.format_seconds(0.00027) == "270.00 微秒"
-    assert blocks_module.format_seconds(1e-5) == "10.00 微秒"
-    assert blocks_module.format_seconds(None) == "—"
+    assert blocks_module.format_seconds(2.7, LANG_ZH) == "2.700 秒"
+    assert blocks_module.format_seconds(0.0027, LANG_ZH) == "2.700 毫秒"
+    assert blocks_module.format_seconds(0.00027, LANG_ZH) == "270.00 微秒"
+    assert blocks_module.format_seconds(1e-5, LANG_ZH) == "10.00 微秒"
+    assert blocks_module.format_seconds(None, LANG_ZH) == "—"
 
 
 def test_render_writes_every_format(tmp_path: Path) -> None:
@@ -278,7 +286,9 @@ def test_render_writes_every_format(tmp_path: Path) -> None:
 
 
 def _archive(root: Path, specifier: str) -> None:
-    storage.save_run({"run": {}, "units": [], "self_check": {"ok": True}}, framework=specifier, root=root)
+    storage.save_run(
+        {"run": {}, "units": [], "self_check": {"ok": True}}, framework=specifier, root=root
+    )
 
 
 def test_index_links_every_rendered_version(tmp_path: Path) -> None:
@@ -304,7 +314,12 @@ def test_index_says_so_when_nothing_has_been_rendered_yet(tmp_path: Path) -> Non
     assert cli.main(["index", "--results", str(results), "--site", str(site)]) == 0
 
     index = (site / "index.html").read_text(encoding="utf-8")
-    assert "还没有任何已渲染的报告" in index
+    assert "No rendered reports yet." in index
+    # 中文首页在 zh/ 子目录；两页顶部互链（design D3）
+    chinese = (site / "zh" / "index.html").read_text(encoding="utf-8")
+    assert "还没有任何已渲染的报告" in chinese
+    assert '<a href="zh/index.html">' in index
+    assert '<a href="../index.html">' in chinese
 
 
 # ------------------------------------------------------------------ 自检门禁
@@ -326,7 +341,15 @@ def test_render_refuses_when_self_check_failed(tmp_path: Path) -> None:
     )
 
     code = cli.main(
-        ["render", "--framework", "9.9.9", "--results", str(results), "--out", str(tmp_path / "site")]
+        [
+            "render",
+            "--framework",
+            "9.9.9",
+            "--results",
+            str(results),
+            "--out",
+            str(tmp_path / "site"),
+        ]
     )
     assert code == 5
     assert not (tmp_path / "site" / "index.html").exists()

@@ -14,6 +14,7 @@ import pytest
 
 from zoo_bench import cli, environment, storage
 from zoo_bench import matrix as matrix_module
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import blocks as blocks_module
 
 PYPI = "zoo-framework==0.7.1b0"
@@ -83,9 +84,7 @@ def test_nameless_git_target_also_gets_a_readable_slug() -> None:
 
 
 def test_select_framework_accepts_a_bare_ref() -> None:
-    matrix = matrix_module.Matrix(
-        frameworks=(PYPI, GIT), concurrency=(1,), body_tiers_us=(300.0,)
-    )
+    matrix = matrix_module.Matrix(frameworks=(PYPI, GIT), concurrency=(1,), body_tiers_us=(300.0,))
 
     assert matrix_module.select_framework(matrix, "0.7.1b0") == PYPI
     assert matrix_module.select_framework(matrix, "dev") == GIT
@@ -128,7 +127,9 @@ def test_version_comparison_survives_a_non_normalised_string(
 
 def test_git_target_requires_a_git_install(monkeypatch: pytest.MonkeyPatch) -> None:
     """装的是某个 release、而矩阵要的是分支——**必须拦下**，否则会安静地测错东西。"""
-    monkeypatch.setattr(environment, "install_source", lambda *_: {"url": "https://files.pythonhosted.org/x"})
+    monkeypatch.setattr(
+        environment, "install_source", lambda *_: {"url": "https://files.pythonhosted.org/x"}
+    )
 
     problem = cli._verify_installed(matrix_module.parse_target(GIT))
 
@@ -218,13 +219,23 @@ def _model_with_source(install_source: dict[str, Any] | None) -> dict[str, Any]:
         },
         "run": {},
         "load": {"composition": "x", "caveat": "y"},
-        "conclusion": {"summary": [], "note": "", "overhead_crossings": [], "relative_turnings": []},
+        "conclusion": {
+            "summary": [],
+            "note": "",
+            "overhead_crossings": [],
+            "relative_turnings": [],
+        },
         "dimensions": {
             "latency": {"title": "延迟", "note": "n", "rows": []},
             "overhead": {"title": "开销", "note": "n", "rows": []},
             "throughput": {"title": "吞吐", "note": "n", "rows": []},
-            "semantics": {"title": "语义", "status": "x", "scope_note": "s", "items": [],
-                          "reason": "r"},
+            "semantics": {
+                "title": "语义",
+                "status": "x",
+                "scope_note": "s",
+                "items": [],
+                "reason": "r",
+            },
         },
         "unfavorable": {"items": [], "found": True, "note": "n"},
         "caveats": [],
@@ -245,8 +256,13 @@ def test_report_shows_the_git_commit_for_branch_installs() -> None:
     }
     text = "\n".join(
         part
-        for block in blocks_module.build_blocks(_model_with_source(source), [])
-        for part in (block.text, *block.items, *block.headers, *(c for row in block.rows for c in row))
+        for block in blocks_module.build_blocks(_model_with_source(source), [], lang=LANG_ZH)
+        for part in (
+            block.text,
+            *block.items,
+            *block.headers,
+            *(c for row in block.rows for c in row),
+        )
     )
 
     assert "安装来源" in text
@@ -257,8 +273,13 @@ def test_report_shows_the_git_commit_for_branch_installs() -> None:
 def test_report_has_no_source_rows_for_a_plain_pypi_install() -> None:
     text = "\n".join(
         part
-        for block in blocks_module.build_blocks(_model_with_source(None), [])
-        for part in (block.text, *block.items, *block.headers, *(c for row in block.rows for c in row))
+        for block in blocks_module.build_blocks(_model_with_source(None), [], lang=LANG_ZH)
+        for part in (
+            block.text,
+            *block.items,
+            *block.headers,
+            *(c for row in block.rows for c in row),
+        )
     )
 
     assert "安装来源" not in text

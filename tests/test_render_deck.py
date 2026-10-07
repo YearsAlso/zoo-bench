@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import deck as deck_module
 from zoo_bench.render import markdown as markdown_renderer
@@ -153,6 +154,7 @@ def _model(
     ]
 
     return {
+        "lang": LANG_ZH,
         # 真实留档路径来自 CLI，是**绝对路径**（本机 `F:\...`、CI `/home/runner/...`）
         "source": {
             "path": r"F:\Python\zoo\zoo-bench\results\zoo-framework-9.9.9\20260101T000000Z.json"
@@ -213,7 +215,7 @@ def _model(
 
 
 def _deck(model: dict[str, Any]) -> str:
-    return deck_module.render_deck(model, blocks_module.build_blocks(model, []))
+    return deck_module.render_deck(model, blocks_module.build_blocks(model, [], lang=LANG_ZH))
 
 
 def _slides(html: str) -> list[tuple[str, str]]:
@@ -308,7 +310,7 @@ def _unfavorable_tiers_in(html: str) -> Counter[tuple[str, int, float]]:
     for label, body in _slides(html):
         # **续页也算**：标签是「公开的不利数据（续）」，只匹配首片会把后面几页的行全漏掉，
         # 而"漏掉"正是这条用例要拦的东西。
-        if not label.split(" ", 1)[1].startswith(blocks_module.UNFAVORABLE_SECTION_TITLE):
+        if not label.split(" ", 1)[1].startswith(blocks_module.unfavorable_section_title(LANG_ZH)):
             continue
         for row in _ROW.findall(body):
             cells = _CELL.findall(row)
@@ -404,7 +406,9 @@ def test_each_charted_dimension_keeps_its_value_table() -> None:
     page = _deck(_model())
 
     for title in ("延迟分位数与抖动", "框架自身开销占比", "吞吐与并发伸缩"):
-        assert f"{blocks_module.DIMENSION_SECTION_PREFIX}{title}" in page, f"少了维度章节：{title}"
+        assert f"{blocks_module.dimension_section_prefix(LANG_ZH)}{title}" in page, (
+            f"少了维度章节：{title}"
+        )
         assert f'<h2 class="h-md">{title}：并发度' in page, f"少了 {title} 的条形图页"
 
 

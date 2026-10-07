@@ -6,6 +6,9 @@
 中文字体由 :func:`.fonts.find_pdf_font` 解析，它同时要求"覆盖报告文本"与"能被 reportlab 嵌入"
 （后者意味着必须是 TrueType 轮廓；CFF 轮廓的 fonts-noto-cjk 只适合 matplotlib）。**解析失败即
 明确报错并给出安装指引**，不产出一份中文变方框的 PDF。
+
+英文产物（design D6）正文全 ASCII，用 reportlab 的内置 base-14 字体，**不依赖系统字体文件**：
+找不到中文字体的环境照样能出英文 PDF，否则装 CJK 字体会变成英文产物的假前置条件。
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from ..i18n import LANG_EN, t
 from .blocks import (
     BULLETS,
     HEADING,
@@ -67,16 +71,50 @@ def _markup(text: str) -> str:
     return _CODE.sub(r'<font color="#666666">\1</font>', escaped)
 
 
+def report_text_units(blocks: list[Block]) -> list[tuple[str, str]]:
+    """把块列表摊成 ``(位置, 文本)``，**一条一段**。
+
+    字符门禁要拦的是"某一条里混进了非法字符"，而拼成整篇后再查，报出来只能是一屏码位转义
+    （实测过：一屏 `U+4E00` 起的转义，读者无从知道是哪一条）。位置形如
+    ``口径局限 / 条目 3``、``运行环境 / 表格第 10 行（驱动面世代）第 2 列``——表格带上行首
+    单元格作行名，否则"第 10 行"读者还得自己数。条目粒度正是"中文自述散在若干条里"时最需要
+    的定位。
+
+    Returns:
+        ``(位置, 文本)`` 列表；全篇文本由各条拼起来（:func:`blocks_text`）。
+    """
+    units: list[tuple[str, str]] = []
+    section = ""
+    for block in blocks:
+        if block.kind == HEADING:
+            section = block.text or section
+            units.append((section, block.text))
+            continue
+        if block.text:
+            units.append((f"{section} / 正文", block.text))
+        units.extend(
+            (f"{section} / 条目 {index}", item) for index, item in enumerate(block.items, 1)
+        )
+        units.extend(
+            (f"{section} / 表头 {index}", header) for index, header in enumerate(block.headers, 1)
+        )
+        for row_index, cells in enumerate(block.rows, 1):
+            row_name = f"表格第 {row_index} 行"
+            row_label = cells[0][:20] if len(cells) > 1 else ""
+            for column_index, cell in enumerate(cells, 1):
+                where = row_name
+                if row_label and column_index > 1:
+                    where += f"（{row_label}）"
+                units.append((f"{section} / {where}第 {column_index} 列", cell))
+    return units
+
+
 def blocks_text(blocks: list[Block]) -> str:
     """把块列表里的全部文字拼起来。
 
     用途是给字体解析提供"报告实际会渲染的字符集"——否则缺字只能在产出后靠肉眼发现。
     """
-    parts: list[str] = []
-    for block in blocks:
-        parts.extend((block.text, *block.items, *block.headers))
-        parts.extend(cell for row in block.rows for cell in row)
-    return "".join(parts)
+    return "".join(text for _, text in report_text_units(blocks))
 
 
 def _styles(font_name: str) -> dict[str, ParagraphStyle]:
@@ -142,13 +180,14 @@ def _image(src: Path, width: float) -> Image:
     return Image(str(src), width=width, height=width * height_px / width_px)
 
 
-def build_story(blocks: list[Block], width: float, font_name: str) -> list[Any]:
+def build_story(blocks: list[Block], width: float, font_name: str, *, lang: str) -> list[Any]:
     """把块列表变成 reportlab 的 flowable 列表。
 
     Args:
         blocks: :func:`zoo_bench.render.blocks.build_blocks` 的返回值。
         width: 可用宽度（点）。
-        font_name: 已注册的中文字体名。
+        font_name: 已注册的字体名（中文产物为 CJK 字体，英文产物为内置字体）。
+        lang: 产物语言（缺图占位文案随语言）。
 
     Returns:
         flowable 列表。
@@ -179,9 +218,27 @@ def build_story(blocks: list[Block], width: float, font_name: str) -> list[Any]:
                 story.append(KeepTogether(_image(source, width)))
             else:
                 # 图缺失时如实说明，不留一块空白让人以为是排版问题
-                story.append(Paragraph(f"[缺图：{_markup(block.src)}]", styles[NOTE]))
+                story.append(Paragraph(t("pdf.missing_figure", lang, src=block.src), styles[NOTE]))
 
     return story
+
+
+#: 英文产物使用的内置字体。reportlab 的 base-14 字体随库自带、必然可用，覆盖全部 ASCII；
+#: 英文正文被字符门禁限制为 ASCII（design D6），故英文产物不依赖任何系统字体文件——
+#: 装 CJK 字体不该成为英文产物的前置条件。
+ENGLISH_FONT: dict[str, object] = {
+    "name": "Helvetica",
+    "face_index": None,
+    "path": None,
+    "skipped": [],
+}
+
+
+def _font_for(lang: str, text: str) -> dict[str, object]:
+    """按语言选字体：中文产物必须解析到中文字体（缺失即明确失败），英文产物用内置字体。"""
+    if lang == LANG_EN:
+        return ENGLISH_FONT
+    return find_pdf_font(text)
 
 
 def render_pdf(
@@ -203,17 +260,21 @@ def render_pdf(
         ``{"pdf": 路径, "font": 字体信息, "font_text_length": 覆盖检查用的字符数}``。
 
     Raises:
-        zoo_bench.render.blocks.UnsafeReportText: 报告正文里有中文字体不一定有的符号。
-        zoo_bench.render.fonts.CjkFontUnavailable: 找不到既覆盖文本又能被嵌入的中文字体。
+        zoo_bench.render.blocks.UnsafeReportText: 报告正文里有该语言字符规则不允许的符号。
+        zoo_bench.render.fonts.CjkFontUnavailable: 中文产物找不到既覆盖文本又能被嵌入的中文字体。
     """
-    blocks = build_blocks(model, _absolute_charts(charts, figures_dir))
+    lang = model["lang"]
+    blocks = build_blocks(model, _absolute_charts(charts, figures_dir), lang=lang)
 
-    text = blocks_text(blocks)
-    # 先查"字符本身是否该出现在中文报告里"，再查"所选字体认不认得它们"。
-    # 前者是**根因**（用了中文字体不保证有的排版符号），后者是环境差异；两道都拦，
-    # 因为缺字只会变成方框、文件照样生成。实测被 U+2212 卡住过一轮 CI。
-    assert_report_text_is_renderable(text)
-    font = find_pdf_font(text)
+    units = report_text_units(blocks)
+    # 先查"字符是否合该语言的字符规则"（根因：用了字体不保证有的排版符号），再查"所选字体
+    # 认不认得它们"（环境差异）。两道都拦，因为缺字只会变成方框、文件照样生成。
+    # 实测被 U+2212 卡住过一轮 CI。
+    # **逐条查而不是拼成整篇再查**：拼起来查只能报码位转义，读者不知道是哪一条、也就无从修。
+    for source, piece in units:
+        assert_report_text_is_renderable(piece, lang=lang, source=source)
+    text = "".join(piece for _, piece in units)
+    font = _font_for(lang, text)
 
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,12 +286,12 @@ def render_pdf(
         rightMargin=PAGE_MARGIN,
         topMargin=PAGE_MARGIN,
         bottomMargin=PAGE_MARGIN,
-        title="zoo-bench 性能报告",
+        title=t("pdf.doc_title", lang),
         author="zoo-bench",
     )
     width = A4[0] - 2 * PAGE_MARGIN
 
-    story = build_story(blocks, width, str(font["name"]))
+    story = build_story(blocks, width, str(font["name"]), lang=lang)
     document.build(story)
 
     return {"pdf": str(path), "font": font, "font_text_length": len(text)}

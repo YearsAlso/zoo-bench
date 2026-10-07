@@ -54,14 +54,14 @@ CONSISTENCY_TOLERANCE = 0.02
 #: **刻意只取两代都存在、且形态相同的入口**，这样细分本身不随世代改变（世代差异体现在数值上，
 #: 而不是"有没有这一项"）：上一代每轮的策略查询次数接近 0，当前代每个 worker 每轮 3 次
 #: ——那正是两代之间最值得看的一处差异。
-SEAL_SCHEDULING_ROUND = "BaseWaiter.execute_service（走一次调度轮）"
-SEAL_DISPATCH = "BaseWaiter._dispatch_worker（把 worker 交给调度模型）"
+SEAL_SCHEDULING_ROUND = "attribution.seal.scheduling_round"
+SEAL_DISPATCH = "attribution.seal.dispatch"
 #: 策略查询：框架每轮**逐个 worker**问配置的三处入口。
 #:
 #: 包"这三处"而不是包底层的 `ParamsFactory.get_params`：实测 `get_params` 本身只占其中约
 #: 3-4 微秒，其余开销在解析函数自身（逐次属性查找、worker.name 的拼装等）。只包底层入口会让
 #: 这一项看着很小，而把大头落进"调度轮其余"——那正是这个维度要避免的模糊。
-SEAL_POLICY_LOOKUP = "WorkerDispatchCore.resolve_period / resolve_phase / resolve_run_timeout（每轮策略查询）"
+SEAL_POLICY_LOOKUP = "attribution.seal.policy_lookup"
 
 #: 四段的键（顺序即报告里的呈现顺序）。
 SEGMENT_KEYS: tuple[str, ...] = (
@@ -136,9 +136,7 @@ def segment_round(
     rows: list[dict[str, float]] = []
     for body, (submitted_at, submitted_back_at) in zip(bodies, submit_spans, strict=True):
         if body.started_at is None or body.finished_at is None:
-            raise RuntimeError(
-                "执行体的起止时刻读不到——它没有在本进程里运行（跨进程档位无法这样分段）"
-            )
+            raise RuntimeError("attribution.reason.cross_process")
         rows.append(
             {
                 "submit_side_seconds": submitted_back_at - submitted_at,
@@ -449,8 +447,5 @@ def drill_overlap(drilled: list[dict[str, Any]]) -> dict[str, Any]:
         worst = max(worst, (sum(item["buckets"].values()) - submit_side) / submit_side)
     return {
         "max_overlap_ratio": worst,
-        "note": (
-            "细分各项是**独立测量**：它们各自的耗时里都含自己被抢占的等待，故之和可能超过"
-            "它们共同所在的提交侧（实测约 3%）。读的时候不要把它们当成一个可以相加的划分。"
-        ),
+        "note": "report.attribution.drill_note",
     }

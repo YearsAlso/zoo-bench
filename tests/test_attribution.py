@@ -54,7 +54,7 @@ def test_each_segment_is_the_difference_of_its_own_two_instants() -> None:
 
 def test_a_body_that_never_ran_locally_is_reported_as_unmeasurable() -> None:
     """执行体在别的进程里跑过时，它的打点在本进程读不到——报错，而不是给一个错的分段。"""
-    with pytest.raises(RuntimeError, match="跨进程"):
+    with pytest.raises(RuntimeError, match=r"attribution\.reason\.cross_process"):
         attribution.segment_round([_FakeBody(None, None)], [(10.0, 10.1)], drained_at=11.0)
 
 
@@ -123,9 +123,9 @@ def test_drill_overlap_is_published_instead_of_being_papered_over() -> None:
     """
     overlapping = [
         {
-            "buckets": _FakeInstrument(
-                round_total=10.0, dispatch=60.0, policy=50.0
-            ).buckets(concurrency=1, submit_side_seconds=100.0),
+            "buckets": _FakeInstrument(round_total=10.0, dispatch=60.0, policy=50.0).buckets(
+                concurrency=1, submit_side_seconds=100.0
+            ),
             "submit_side_seconds": 100.0,
         }
     ]
@@ -133,16 +133,16 @@ def test_drill_overlap_is_published_instead_of_being_papered_over() -> None:
     verdict = attribution.drill_overlap(overlapping)
 
     assert verdict["max_overlap_ratio"] > 0, "超出了就要说出来"
-    assert "独立测量" in verdict["note"]
+    assert verdict["note"] == "report.attribution.drill_note"
 
 
 def test_drill_overlap_is_zero_when_the_items_fit() -> None:
     """各项装得下时超出量为 0——这条与上一条成对，证明它不是一个恒正的装饰。"""
     fitting = [
         {
-            "buckets": _FakeInstrument(
-                round_total=10.0, dispatch=3.0, policy=4.0
-            ).buckets(concurrency=1, submit_side_seconds=100.0),
+            "buckets": _FakeInstrument(round_total=10.0, dispatch=3.0, policy=4.0).buckets(
+                concurrency=1, submit_side_seconds=100.0
+            ),
             "submit_side_seconds": 100.0,
         }
     ]
@@ -217,7 +217,7 @@ def test_probe_reports_a_cross_process_adapter_as_unmeasurable() -> None:
     )
 
     assert result["status"] == "not_measurable"
-    assert "跨进程" in result["reason"]
+    assert result["reason"] == "attribution.reason.cross_process"
     assert "segments" not in result
 
 
@@ -236,7 +236,7 @@ def test_the_subject_is_drilled_and_a_comparison_is_not() -> None:
     assert set(subject["drill_down"]) == set(attribution.DRILL_KEYS)
     # 细分各项是**独立测量**，不冒充划分：超出提交侧的量要如实发布，而不是夹成一个自洽的样子
     assert subject["drill_overlap"]["max_overlap_ratio"] is not None
-    assert "独立测量" in subject["drill_overlap"]["note"]
+    assert subject["drill_overlap"]["note"] == "report.attribution.drill_note"
     assert subject["instrumentation"]["baseline_end_to_end_seconds"] > 0
 
 
@@ -349,7 +349,10 @@ def test_the_attribution_note_discloses_over_subscription(monkeypatch: pytest.Mo
 
     assert attribution["cores"] == 1
     assert attribution["over_subscribed_concurrencies"] == [4]
-    assert "超订" in attribution["note"]
+    assert attribution["note"] == [
+        "report.attribution.diagnosis_note",
+        "report.attribution.oversubscribed_note",
+    ]
 
 
 def test_attribution_never_gates() -> None:

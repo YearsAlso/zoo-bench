@@ -15,7 +15,7 @@ class ThreadPoolAdapter(BaseAdapter):
 
     name = "thread_pool"
     tier = Tier.BARE
-    notes = "concurrent.futures.ThreadPoolExecutor，池大小 = 并发度；线程复用、无任务队列语义"
+    notes = "adapters.notes.thread_pool"
 
     def setup(self, *, workers: int) -> None:
         self._pool = ThreadPoolExecutor(max_workers=workers)

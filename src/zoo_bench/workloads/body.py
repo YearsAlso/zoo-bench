@@ -80,9 +80,7 @@ def calibrate_iterations(
 
     iterations = max(1, round(target_seconds / unit_seconds))
     for _ in range(max_passes):
-        observed = statistics.median(
-            run_iterations(iterations)[0] for _ in range(samples)
-        )
+        observed = statistics.median(run_iterations(iterations)[0] for _ in range(samples))
         if observed <= 0:
             break
         if abs(observed - target_seconds) / target_seconds <= tolerance:

@@ -27,20 +27,18 @@ from __future__ import annotations
 from typing import Any
 
 from .caliber import (
-    UNINTERPRETABLE_REASON,
     logical_cores_from_environment,
     overhead_is_interpretable,
+    uninterpretable_reason,
 )
+from .i18n import t
 
-ABSOLUTE_NOTE = "绝对耗时不可跨运行比较：仅用于看量级，不要用它读版本差异"
-
-#: 参与对比的相对量。每一项都说明"上升意味着什么"——方向本身不带好坏含义，含义写在度量里。
-METRIC_SEMANTICS = {
-    "overhead_ratio": "被测框架的框架开销占端到端比例；下降即开销摊薄得更好",
-    "speedup_vs_baseline": "对照方案中位数 / 被测框架中位数；上升即被测框架相对更快",
-}
-
-_ENVIRONMENT_KEYS = ("hardware.cpu_model", "hardware.logical_cores", "hardware.platform", "python.version")
+_ENVIRONMENT_KEYS = (
+    "hardware.cpu_model",
+    "hardware.logical_cores",
+    "hardware.platform",
+    "python.version",
+)
 
 
 def _dig(source: dict[str, Any], path: str) -> Any:
@@ -55,30 +53,58 @@ def _dig(source: dict[str, Any], path: str) -> Any:
 def _index(run: dict[str, Any]) -> dict[tuple[str, int, float], dict[str, Any]]:
     """把测量单元索引成 (适配器, 并发度, 档位微秒) -> 单元。"""
     return {
-        (unit["spec"]["adapter"], int(unit["spec"]["concurrency"]), float(unit["spec"]["body_tier_us"])): unit
+        (
+            unit["spec"]["adapter"],
+            int(unit["spec"]["concurrency"]),
+            float(unit["spec"]["body_tier_us"]),
+        ): unit
         for unit in run.get("units", [])
         if unit.get("status") == "ok"
     }
 
 
-def _change(before: float | None, after: float | None) -> dict[str, Any]:
+def _metric_semantics(lang: str) -> dict[str, str]:
+    """参与对比的相对量。每一项都说明"上升意味着什么"——方向本身不带好坏含义，含义写在度量里。"""
+    return {
+        "overhead_ratio": t("compare.metric.overhead_ratio", lang),
+        "speedup_vs_baseline": t("compare.metric.speedup_vs_baseline", lang),
+    }
+
+
+def _change(before: float | None, after: float | None, lang: str) -> dict[str, Any]:
     """两次取值的变化。``ratio`` 为 None 表示基准为 0、比值无意义。"""
     if before is None or after is None:
-        return {"before": before, "after": after, "ratio": None, "direction": "缺失"}
+        return {
+            "before": before,
+            "after": after,
+            "ratio": None,
+            "direction": t("compare.direction.missing", lang),
+        }
     if before == 0:
-        return {"before": before, "after": after, "ratio": None, "direction": "基准为 0，无法求比值"}
+        return {
+            "before": before,
+            "after": after,
+            "ratio": None,
+            "direction": t("compare.direction.zero_baseline", lang),
+        }
 
     ratio = after / before
     if abs(ratio - 1.0) < 1e-9:
-        direction = "持平"
+        direction = t("compare.direction.flat", lang)
     elif ratio > 1:
-        direction = "上升"
+        direction = t("compare.direction.up", lang)
     else:
-        direction = "下降"
-    return {"before": before, "after": after, "ratio": ratio, "delta": ratio - 1.0, "direction": direction}
+        direction = t("compare.direction.down", lang)
+    return {
+        "before": before,
+        "after": after,
+        "ratio": ratio,
+        "delta": ratio - 1.0,
+        "direction": direction,
+    }
 
 
-def _environment_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+def _environment_diff(before: dict[str, Any], after: dict[str, Any], lang: str) -> dict[str, Any]:
     differences = {
         key: {"before": _dig(before, key), "after": _dig(after, key)}
         for key in _ENVIRONMENT_KEYS
@@ -88,15 +114,16 @@ def _environment_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str
         "same": not differences,
         "differences": differences,
         "note": (
-            "两次运行的环境一致"
+            t("compare.environment.same", lang)
             if not differences
-            else "**两次运行的环境不同**：版本差异与机器差异混在一起，不能只归因于版本。"
-            "下面的相对量对整体快慢不敏感，但仍应结合本项判断"
+            else t("compare.environment.different", lang)
         ),
     }
 
 
-def _drive_generation_diff(before_run: dict[str, Any], after_run: dict[str, Any]) -> dict[str, Any]:
+def _drive_generation_diff(
+    before_run: dict[str, Any], after_run: dict[str, Any], lang: str
+) -> dict[str, Any]:
     """两侧各自按哪一代驱动面测量，以及机制不同时对读数的含义。
 
     **驱动机制会随版本变**（实测：完成信号一代取自框架内部回调、一代取自框架自身的结果响应器），
@@ -112,18 +139,15 @@ def _drive_generation_diff(before_run: dict[str, Any], after_run: dict[str, Any]
 
     before, after = side(before_run), side(after_run)
     if before["generation"] is None or after["generation"] is None:
-        note = (
-            "至少一侧的留档里没有驱动面世代（该字段由 zoo-bench 的环境自述记下），"
-            "无法判断两侧的读数口径是否一致——**先补齐环境自述再看差异**"
-        )
+        note = t("compare.generation.missing", lang)
     elif before["generation"] == after["generation"]:
-        note = f"两侧同为「{before['generation']}」代驱动面，读数口径一致"
+        note = t("compare.generation.same", lang, generation=before["generation"])
     else:
-        note = (
-            f"**两侧的驱动面机制不同**（{before['generation']} 与 {after['generation']}）："
-            "完成信号一代取自框架内部回调、一代取自框架自身的结果响应器，而两者的开销都计入"
-            "被测框架的端到端。故两侧的差异里**有一部分是驱动机制自身的成本**——它是这次版本"
-            "变化的一部分，但不能整体读成一般意义的性能改进"
+        note = t(
+            "compare.generation.different",
+            lang,
+            before_gen=before["generation"],
+            after_gen=after["generation"],
         )
     return {
         "before": before,
@@ -139,6 +163,7 @@ def compare_versions(
     *,
     before_label: str,
     after_label: str,
+    lang: str,
 ) -> dict[str, Any]:
     """对比两次留档运行。
 
@@ -147,6 +172,7 @@ def compare_versions(
         after_run: 新版本的运行结果。
         before_label: 旧版本的显示标签。
         after_label: 新版本的显示标签。
+        lang: 对比报告语言（``"en"`` 或 ``"zh"``）。
 
     Returns:
         含两侧元信息、环境差异、各维度相对量变化与单元差集的对比结果。可 JSON 序列化。
@@ -185,18 +211,19 @@ def compare_versions(
                 "concurrency": concurrency,
                 "body_tier_us": tier,
                 "interpretable": readable,
-                "note": "" if readable else UNINTERPRETABLE_REASON,
+                "note": "" if readable else uninterpretable_reason(lang),
                 **(
                     _change(
                         old["absolute"]["framework_overhead_ratio"],
                         new["absolute"]["framework_overhead_ratio"],
+                        lang,
                     )
                     if readable
                     else {
                         "before": None,
                         "after": None,
                         "ratio": None,
-                        "direction": "不可读",
+                        "direction": t("compare.direction.unreadable", lang),
                     }
                 ),
             }
@@ -221,7 +248,7 @@ def compare_versions(
                 "baseline": baseline,
                 "concurrency": concurrency,
                 "body_tier_us": tier,
-                **_change(before_ratios[key], after_ratios[key]),
+                **_change(before_ratios[key], after_ratios[key], lang),
             }
         )
 
@@ -240,17 +267,18 @@ def compare_versions(
     return {
         "before": _side(before_run, before_label),
         "after": _side(after_run, after_label),
+        "lang": lang,
         "environment": _environment_diff(
-            before_run.get("environment") or {}, after_run.get("environment") or {}
+            before_run.get("environment") or {}, after_run.get("environment") or {}, lang
         ),
-        "drive_generation": _drive_generation_diff(before_run, after_run),
-        "metric_semantics": METRIC_SEMANTICS,
+        "drive_generation": _drive_generation_diff(before_run, after_run, lang),
+        "metric_semantics": _metric_semantics(lang),
         "shared_unit_count": len(shared),
         "only_in_one": only_in_one,
         "overhead_ratio": overhead,
         "speedup_vs_baseline": speedups,
         "absolute_seconds": absolute,
-        "absolute_note": ABSOLUTE_NOTE,
+        "absolute_note": t("compare.absolute_note", lang),
     }
 
 
@@ -269,5 +297,7 @@ def _ratios_by_key(run: dict[str, Any]) -> dict[tuple[str, int, float], float]:
     ratios: dict[tuple[str, int, float], float] = {}
     for comparison in run.get("relative", {}).get("comparisons", []):
         for baseline, ratio in comparison.get("ratios_vs_subject", {}).items():
-            ratios[(baseline, int(comparison["concurrency"]), float(comparison["body_tier_us"]))] = float(ratio)
+            ratios[
+                (baseline, int(comparison["concurrency"]), float(comparison["body_tier_us"]))
+            ] = float(ratio)
     return ratios

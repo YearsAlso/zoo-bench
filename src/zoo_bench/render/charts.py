@@ -23,6 +23,7 @@ matplotlib.use("Agg")
 
 from matplotlib import pyplot as plt
 
+from ..i18n import LANG_ZH, t
 from .fonts import apply_to_matplotlib, find_cjk_font_covering
 
 #: PNG 用；SVG 是矢量的，不受它影响。
@@ -73,6 +74,7 @@ def overhead_ratio_chart(
     Returns:
         ``{"figure": 名称, "font": 字体路径, "paths": {格式: 路径}, "scope": 说明}``。
     """
+    lang = model["lang"]
     readable = [
         row
         for row in model["dimensions"]["overhead"]["rows"]
@@ -91,14 +93,20 @@ def overhead_ratio_chart(
             (row["body_tier_us"], row["framework_overhead_ratio"])
         )
 
-    title = f"框架开销占端到端比例（并发度 {concurrency}）"
-    xlabel = "执行体时长（微秒，对数轴）"
-    ylabel = "框架开销 / 端到端"
-    threshold_label = f"开销阈值 {threshold:.0%}"
+    title = t("charts.title.overhead", lang, concurrency=concurrency)
+    xlabel = t("charts.xlabel.body_tier", lang)
+    ylabel = t("charts.ylabel.overhead_ratio", lang)
+    threshold_label = t("charts.threshold", lang, threshold=f"{threshold:.0%}")
 
-    # 先建好标签再选字体：这几个字必须由所选字体认得，否则图上只会静默变成方框
-    font = find_cjk_font_covering("".join((title, xlabel, ylabel, threshold_label)))
-    apply_to_matplotlib(font)
+    # 先建好标签再选字体：这几个字必须由所选字体认得，否则图上只会静默变成方框。
+    # 英文产物的文字全 ASCII（design D6），matplotlib 默认字体即可覆盖——不要求中文字体，
+    # 否则"装中文字体"会变成英文产物的假前置条件（design D6）。
+    if lang == LANG_ZH:
+        font = find_cjk_font_covering("".join((title, xlabel, ylabel, threshold_label)))
+        apply_to_matplotlib(font)
+        font_used = str(font)
+    else:
+        font_used = "default (matplotlib built-ins, ASCII-only text)"
 
     figure, axes = plt.subplots(figsize=(8.0, 4.5))
     for label, points in sorted(series.items()):
@@ -124,19 +132,19 @@ def overhead_ratio_chart(
 
     # 有并发度被撤下时必须说出来：不然读者会以为这张图覆盖了矩阵里的全部并发度
     withheld = sorted(
-        {row["concurrency"] for row in all_rows}
-        - {row["concurrency"] for row in readable}
+        {row["concurrency"] for row in all_rows} - {row["concurrency"] for row in readable}
     )
-    scope = f"仅并发度 {concurrency} 的档位；比值仅在同一次运行内成立"
+    scope = t("charts.scope.overhead", lang, concurrency=concurrency)
     if withheld:
-        scope += (
-            f"。并发度 {', '.join(str(value) for value in withheld)} 的开销数字已撤下"
-            "（超出该机器并行能力，见口径章节），故不在图上"
+        scope += t(
+            "charts.scope.overhead_withheld",
+            lang,
+            withheld=", ".join(str(value) for value in withheld),
         )
     return {
         "figure": "overhead_ratio",
-        "font": str(font),
-        "paths": _render(figure, outdir=outdir, name="overhead_ratio"),
+        "font": font_used,
+        "paths": _render(figure, outdir=outdir, name=f"{lang}-overhead_ratio"),
         "scope": scope,
     }
 
@@ -155,6 +163,7 @@ def throughput_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any
         同 :func:`overhead_ratio_chart` 的返回结构。
     """
     rows = model["dimensions"]["throughput"]["rows"]
+    lang = model["lang"]
     tier = _smallest(rows, "body_tier_us")
     scoped = [row for row in rows if row["body_tier_us"] == tier]
 
@@ -164,12 +173,17 @@ def throughput_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any
             (row["concurrency"], row["throughput_per_second"])
         )
 
-    title = f"吞吐随并发度的变化（执行体 {tier:g} 微秒档）"
-    xlabel = "并发度（对数轴）"
-    ylabel = "任务 / 秒"
+    title = t("charts.title.throughput", lang, tier=tier)
+    xlabel = t("charts.xlabel.concurrency", lang)
+    ylabel = t("charts.ylabel.throughput", lang)
 
-    font = find_cjk_font_covering("".join((title, xlabel, ylabel)))
-    apply_to_matplotlib(font)
+    # 英文产物的文字全 ASCII（design D6）：不需要中文字体，matplotlib 默认字体即可
+    if lang == LANG_ZH:
+        font = find_cjk_font_covering("".join((title, xlabel, ylabel)))
+        apply_to_matplotlib(font)
+        font_used = str(font)
+    else:
+        font_used = "default (matplotlib built-ins, ASCII-only text)"
 
     figure, axes = plt.subplots(figsize=(8.0, 4.5))
     for label, points in sorted(series.items()):
@@ -195,9 +209,9 @@ def throughput_chart(model: dict[str, Any], outdir: str | Path) -> dict[str, Any
 
     return {
         "figure": "throughput",
-        "font": str(font),
-        "paths": _render(figure, outdir=outdir, name="throughput"),
-        "scope": f"仅执行体 {tier:g} 微秒 档；吞吐仅在同一次运行内成立",
+        "font": font_used,
+        "paths": _render(figure, outdir=outdir, name=f"{lang}-throughput"),
+        "scope": t("charts.scope.throughput", lang, tier=tier),
     }
 
 
@@ -218,6 +232,7 @@ def relative_multiple_chart(model: dict[str, Any], outdir: str | Path) -> dict[s
     Returns:
         同 :func:`overhead_ratio_chart` 的返回结构。
     """
+    lang = model["lang"]
     turnings = [
         turning
         for turning in model["conclusion"].get("relative_turnings", [])
@@ -225,13 +240,18 @@ def relative_multiple_chart(model: dict[str, Any], outdir: str | Path) -> dict[s
     ]
     concurrencies = sorted({turning["concurrency"] for turning in turnings})
 
-    title = "相对各对照方案的倍数（大于 1 即被测框架更快）"
-    xlabel = "执行体时长（微秒，对数轴）"
-    ylabel = "对照方案耗时 / 被测框架耗时"
-    tie_label = "打平线 1.0"
+    title = t("charts.title.relative", lang)
+    xlabel = t("charts.xlabel.body_tier", lang)
+    ylabel = t("charts.ylabel.relative", lang)
+    tie_label = t("charts.tie_line", lang)
 
-    font = find_cjk_font_covering("".join((title, xlabel, ylabel, tie_label)))
-    apply_to_matplotlib(font)
+    # 英文产物的文字全 ASCII（design D6）：不需要中文字体，matplotlib 默认字体即可
+    if lang == LANG_ZH:
+        font = find_cjk_font_covering("".join((title, xlabel, ylabel, tie_label)))
+        apply_to_matplotlib(font)
+        font_used = str(font)
+    else:
+        font_used = "default (matplotlib built-ins, ASCII-only text)"
 
     columns = min(2, len(concurrencies))
     rows = -(-len(concurrencies) // columns)
@@ -269,14 +289,24 @@ def relative_multiple_chart(model: dict[str, Any], outdir: str | Path) -> dict[s
         panel.axhline(1.0, linestyle="--", linewidth=1.0, color="grey")
         panel.set_xscale("log")
         panel.set_yscale("log")
-        # 对数刻度的标签里指数带 U+2212 减号，而中文字体没有这个字形——matplotlib 会把它换成
-        # 一个方块（与报告正文被导出前门禁拦下的那次是同一个坑）。故显式给刻度并强制普通格式，
-        # 让标签全是 ASCII：几何仍是对数的，文字安全。
-        ticks = [value for value in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0) if low * 0.9 <= value <= high * 1.1]
+        # 对数刻度的默认标签走 mathtext，指数带 U+2212 减号，而中文字体没有这个字形——
+        # matplotlib 会把它换成一个方块（与报告正文被导出前门禁拦下的那次是同一个坑）。故显式给
+        # 刻度并强制普通格式，让标签全是 ASCII：几何仍是对数的，文字安全。
+        ticks = [
+            value
+            for value in (0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0)
+            if low * 0.9 <= value <= high * 1.1
+        ]
         if len(ticks) >= 2:
             panel.set_yticks(ticks)
-            panel.get_yaxis().set_major_formatter(plt.ScalarFormatter())
-        panel.set_title(f"并发度 {concurrency}")
+        # 普通格式**无条件**设：候选刻度不足两个时（比值范围超出候选带）默认的 LogFormatter
+        # 正是产生 4×10⁻¹ 这类标签的那一支
+        panel.get_yaxis().set_major_formatter(plt.ScalarFormatter())
+        # 次刻度标签一并关掉：它不走主格式，而是 `$\mathdefault{...}$`，而 \mathdefault 取的是
+        # **正文字体**——中文侧那是 CJK 字体、缺 U+2212，于是主刻度改完仍出方框（实测该图的
+        # 全部警告都来自次刻度的这一类标签）
+        panel.get_yaxis().set_minor_formatter(plt.NullFormatter())
+        panel.set_title(t("charts.panel.title", lang, concurrency=concurrency))
         panel.set_xlabel(xlabel)
         panel.grid(True, linestyle=":", alpha=0.5)
         panel.legend(fontsize=7)
@@ -294,16 +324,15 @@ def relative_multiple_chart(model: dict[str, Any], outdir: str | Path) -> dict[s
 
     return {
         "figure": "relative_multiple",
-        "font": str(font),
-        "paths": _render(figure, outdir=outdir, name="relative_multiple"),
-        "scope": (
-            f"每个所测并发度各一个面板（共 {len(concurrencies)} 个）；"
-            "倍数仅在同一次运行内成立"
-        ),
+        "font": font_used,
+        "paths": _render(figure, outdir=outdir, name=f"{lang}-relative_multiple"),
+        "scope": t("charts.scope.relative", lang, count=len(concurrencies)),
     }
 
 
-def render_all(model: dict[str, Any], outdir: str | Path, *, threshold: float) -> list[dict[str, Any]]:
+def render_all(
+    model: dict[str, Any], outdir: str | Path, *, threshold: float
+) -> list[dict[str, Any]]:
     """出全部图表。
 
     Args:

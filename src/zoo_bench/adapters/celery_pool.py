@@ -45,10 +45,7 @@ class CeleryAdapter(BaseAdapter):
     name = "celery"
     tier = Tier.ECOSYSTEM
     comparable = False
-    notes = (
-        "Celery 是分布式方案：需要 broker 与独立 worker 进程，投递与结果回传都跨进程，"
-        "与进程内派发架构不同、不可直接对标；其数字不参与交叉点推导（design D3）"
-    )
+    notes = "adapters.notes.celery_pool"
 
     def setup(self, *, workers: int) -> None:
         broker = os.environ.get(BROKER_ENV)

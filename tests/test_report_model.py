@@ -12,8 +12,9 @@ from typing import Any
 
 import pytest
 
-from zoo_bench import storage
-from zoo_bench.report import LOAD_CAVEAT, OVERHEAD_THRESHOLD, build_model, subject_name
+from zoo_bench import i18n, storage
+from zoo_bench.i18n import LANG_ZH
+from zoo_bench.report import OVERHEAD_THRESHOLD, build_model, subject_name
 from zoo_bench.runner import ABSOLUTE_NOTE
 
 FRAMEWORK = "zoo-framework==9.9.9"
@@ -87,15 +88,18 @@ def _unit(
             "throughput_per_second": concurrency / e2e_per_task,
         },
         "checks": {"body": {"body_deviation_ok": True}},
-        "rounds": _rounds(
-            e2e_per_task=e2e_per_task, concurrency=concurrency, jitter=jitter
-        ),
+        "rounds": _rounds(e2e_per_task=e2e_per_task, concurrency=concurrency, jitter=jitter),
     }
 
 
 def _subject_unit(
-    *, tier_us: float, e2e_per_task: float, body: float, concurrency: int = 4,
-    drive_level: str = "调度派发层", jitter: float = 0.02,
+    *,
+    tier_us: float,
+    e2e_per_task: float,
+    body: float,
+    concurrency: int = 4,
+    drive_level: str = "调度派发层",
+    jitter: float = 0.02,
 ) -> dict[str, Any]:
     """被测框架的单元：**必须声明 tier 为 ``under_test``**，否则模型识别不出被测对象。
 
@@ -162,7 +166,9 @@ def test_saved_run_can_be_located_by_version(tmp_path: Path) -> None:
 
 def test_multiple_runs_of_one_version_coexist_and_latest_wins(tmp_path: Path) -> None:
     storage.save_run({"n": 1}, framework=FRAMEWORK, root=tmp_path, timestamp="20260101T000000Z")
-    latest = storage.save_run({"n": 2}, framework=FRAMEWORK, root=tmp_path, timestamp="20260102T000000Z")
+    latest = storage.save_run(
+        {"n": 2}, framework=FRAMEWORK, root=tmp_path, timestamp="20260102T000000Z"
+    )
 
     files = storage.run_files(FRAMEWORK, root=tmp_path)
     assert len(files) == 2
@@ -202,8 +208,8 @@ def test_same_data_renders_identically(tmp_path: Path) -> None:
     )
     path = storage.save_run(source, framework=FRAMEWORK, root=tmp_path)
 
-    first = build_model(storage.load_run(path))
-    second = build_model(storage.load_run(path))
+    first = build_model(storage.load_run(path), lang=LANG_ZH)
+    second = build_model(storage.load_run(path), lang=LANG_ZH)
     assert first == second
 
 
@@ -212,13 +218,13 @@ def test_same_data_renders_identically(tmp_path: Path) -> None:
 
 def test_model_carries_the_environment_it_was_given() -> None:
     environment = {"hardware": {"cpu_model": "Synthetic CPU"}, "harness": {"version": "0.0.1"}}
-    model = build_model(_result([]), environment=environment)
+    model = build_model(_result([]), environment=environment, lang=LANG_ZH)
     assert model["environment"] == environment
 
 
 def test_model_marks_missing_environment_as_missing() -> None:
     """自述缺失时如实标 null，渲染层据此拒绝发布——不拿空对象冒充"已自述"。"""
-    model = build_model(_result([]))
+    model = build_model(_result([]), lang=LANG_ZH)
     assert model["environment"] is None
 
 
@@ -226,11 +232,12 @@ def test_environment_collector_never_fabricates_a_cpu_model() -> None:
     """取不到 CPU 型号时记 null 并说明原因，**不退回 platform.processor() 那种架构串**。"""
     from zoo_bench import environment
 
-    model, source = environment.cpu_model()
-    # 无论成败都必须给出说明：成功时是来源，失败时是原因
+    model, source, source_params = environment.cpu_model()
+    # 无论成败都必须给出说明：成功时是来源，失败时是目录键（渲染侧解析）
     assert source.strip(), "来源说明不得为空"
     if model is None:
-        assert any(marker in source for marker in ("取", "失败", "不支持", "没有")), source
+        assert i18n.has_translation(source), source
+        assert i18n.t(source, LANG_ZH, **source_params).strip()
 
 
 def test_harness_commit_resolves_from_the_working_directory(
@@ -247,7 +254,7 @@ def test_harness_commit_resolves_from_the_working_directory(
     repo_root = Path(__file__).resolve().parents[1]
     monkeypatch.chdir(repo_root)
 
-    commit, source = environment.harness_commit()
+    commit, source, _ = environment.harness_commit()
     assert commit, f"工作目录在仓库内时应能取到 commit，实际：{source}"
     assert len(commit) == 40
 
@@ -257,18 +264,22 @@ def test_harness_commit_resolves_from_the_working_directory(
 
 def test_model_declares_the_load_is_a_stand_in() -> None:
     """4.8：负载是替身这一事实必须随报告出现，并给出其构成。"""
-    model = build_model(_result([]))
+    model = build_model(_result([]), lang=LANG_ZH)
     assert model["load"]["is_stand_in"] is True
     assert "JSON" in model["load"]["composition"]
-    assert model["load"]["caveat"] == LOAD_CAVEAT
+    assert model["load"]["caveat"] == i18n.t("report.load.caveat", LANG_ZH)
     assert "替身" in model["load"]["caveat"]
 
 
 def test_model_declares_the_driven_level() -> None:
     """spec 的"被测层级被声明"：不声明层级，派发原语开销会被读成终端用户延迟。"""
     drive_level = "调度派发层：直接驱动 BaseWaiter.execute_service()"
-    units = [_unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003, meta={"drive_level": drive_level})]
-    model = build_model(_result(units))
+    units = [
+        _unit(
+            "zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003, meta={"drive_level": drive_level}
+        )
+    ]
+    model = build_model(_result(units), lang=LANG_ZH)
 
     kinds = {caveat["kind"] for caveat in model["caveats"]}
     assert "被测层级" in kinds
@@ -281,7 +292,9 @@ def test_model_annotates_incomparable_and_costing_caveats() -> None:
     每个方案**自己声明的口径**都要进报告——按关键字替读者挑哪条重要，代价是漏掉没被命中的。
     """
     units = [
-        _unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003, meta={"drive_level": "派发层"}),
+        _unit(
+            "zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003, meta={"drive_level": "派发层"}
+        ),
         _unit(
             "celery",
             tier_us=300,
@@ -297,7 +310,7 @@ def test_model_annotates_incomparable_and_costing_caveats() -> None:
             meta={"notes": "执行体与返回值跨进程序列化的成本计入端到端"},
         ),
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
     kinds = {caveat["kind"] for caveat in model["caveats"]}
     assert {"不可直接对标", "口径说明", "被测层级"} <= kinds
 
@@ -310,7 +323,7 @@ def test_model_reports_failed_units_as_a_caveat() -> None:
         _unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003),
         {"spec": {"adapter": "celery", "concurrency": 4, "body_tier_us": 300}, "status": "failed"},
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
     failed = [caveat for caveat in model["caveats"] if caveat["kind"] == "未完成的单元"]
     assert failed and failed[0]["count"] == 1
 
@@ -325,7 +338,7 @@ def test_conclusion_names_the_tier_where_overhead_drops_below_threshold() -> Non
         _subject_unit(tier_us=300, e2e_per_task=0.000340, body=0.000300),
         _subject_unit(tier_us=2700, e2e_per_task=0.002740, body=0.002700),
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
     crossing = model["conclusion"]["overhead_crossings"][0]
 
     assert crossing["first_tier_at_or_below_threshold_us"] == 300
@@ -362,7 +375,7 @@ def test_queueing_contaminated_groups_are_marked_and_kept_out_of_the_headline() 
             ],
         },
     }
-    model = build_model(_result(units, self_check=contaminated))
+    model = build_model(_result(units, self_check=contaminated), lang=LANG_ZH)
 
     by_concurrency = {c["concurrency"]: c for c in model["conclusion"]["overhead_crossings"]}
     assert by_concurrency[1]["queueing_contaminated"] is False
@@ -375,9 +388,9 @@ def test_queueing_contaminated_groups_are_marked_and_kept_out_of_the_headline() 
 
     kinds = {caveat["kind"] for caveat in model["caveats"]}
     assert "受排队污染的开销数字" in kinds, "受污染的组必须在报告里点名，而不是默默留在表里"
-    assert any(
-        caveat.get("groups") == ["zoo/64"] for caveat in model["caveats"]
-    ), "要指名具体是哪一组"
+    assert any(caveat.get("groups") == ["zoo/64"] for caveat in model["caveats"]), (
+        "要指名具体是哪一组"
+    )
 
 
 def test_headline_still_uses_the_trustworthy_rows_only() -> None:
@@ -386,7 +399,7 @@ def test_headline_still_uses_the_trustworthy_rows_only() -> None:
         _subject_unit(tier_us=40, e2e_per_task=0.000080, body=0.000040, concurrency=1),
         _subject_unit(tier_us=2700, e2e_per_task=0.002715, body=0.002700, concurrency=1),
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
 
     headline = model["conclusion"]["summary"][0]
     assert "2700" in headline
@@ -404,7 +417,7 @@ def test_conclusion_headline_is_about_the_subject_not_the_best_baseline() -> Non
         # 对照方案在最短档就已远低于阈值——若实现取最小值，头条会变成 40
         _unit("bare_thread", tier_us=40, e2e_per_task=0.000080, body=0.000043),
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
 
     headline = model["conclusion"]["summary"][0]
     assert "zoo" in headline, f"头条必须点名被测框架：{headline}"
@@ -416,7 +429,7 @@ def test_conclusion_admits_absence_of_a_crossing() -> None:
     units = [
         _subject_unit(tier_us=tier, e2e_per_task=0.000060, body=0.000040) for tier in (40, 300)
     ]
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
 
     crossing = model["conclusion"]["overhead_crossings"][0]
     assert crossing["first_tier_at_or_below_threshold_us"] is None
@@ -431,8 +444,7 @@ def test_conclusion_admits_absence_of_a_crossing() -> None:
 def test_unfavorable_lists_the_tiers_where_a_baseline_is_faster() -> None:
     # **对照方案也要有单元**：三分类的带宽取自两侧的逐轮离散度，缺一侧就判不了（会进"分不出胜负"）
     units = [
-        _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008)
-        for tier in (40, 300, 2700)
+        _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300, 2700)
     ] + [
         _unit("bare_thread", tier_us=tier, e2e_per_task=0.0001, body=0.00008)
         for tier in (40, 300, 2700)
@@ -445,7 +457,8 @@ def test_unfavorable_lists_the_tiers_where_a_baseline_is_faster() -> None:
                 _comparison(300, 0.0001, {"bare_thread": 0.80}),
                 _comparison(2700, 0.0001, {"bare_thread": 1.10}),
             ],
-        )
+        ),
+        lang=LANG_ZH,
     )
 
     unfavorable = model["unfavorable"]
@@ -461,12 +474,18 @@ def test_unfavorable_records_when_the_baseline_never_loses() -> None:
     """对照方案在所测档位内始终更快时，明说"未观测到"，并把每个档位列为不利数据。"""
     units = [
         _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)
-    ] + [_unit("bare_thread", tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)]
+    ] + [
+        _unit("bare_thread", tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)
+    ]
     model = build_model(
         _result(
             units,
-            [_comparison(40, 0.0001, {"bare_thread": 0.5}), _comparison(300, 0.0001, {"bare_thread": 0.8})],
-        )
+            [
+                _comparison(40, 0.0001, {"bare_thread": 0.5}),
+                _comparison(300, 0.0001, {"bare_thread": 0.8}),
+            ],
+        ),
+        lang=LANG_ZH,
     )
 
     turning = model["conclusion"]["relative_turnings"][0]
@@ -482,7 +501,9 @@ def test_unfavorable_is_empty_when_the_subject_always_wins() -> None:
     空**不等于**可以省略：`found` 为 False 是给发布门禁看的信号。
     """
     units = [_subject_unit(tier_us=300, e2e_per_task=0.00008, body=0.00008)]
-    model = build_model(_result(units, [_comparison(300, 0.00008, {"bare_thread": 1.5})]))
+    model = build_model(
+        _result(units, [_comparison(300, 0.00008, {"bare_thread": 1.5})]), lang=LANG_ZH
+    )
 
     assert model["subject"] == "zoo", "fixture 必须让被测对象可被识别，否则本用例验的是空集合"
     assert model["unfavorable"]["found"] is False
@@ -496,7 +517,7 @@ def test_unfavorable_is_empty_when_the_subject_always_wins() -> None:
 def test_semantics_dimension_is_present_and_declares_its_scope_when_unmeasured() -> None:
     """4.4 的口径声明：**未测量也要在场并声明口径**——省略会让读者以为这个维度不存在，
     而它恰是被测框架最主要的差异化。"""
-    model = build_model(_result([]))
+    model = build_model(_result([]), lang=LANG_ZH)
     semantics = model["dimensions"]["semantics"]
 
     assert semantics["status"] == "not_probed"
@@ -505,8 +526,12 @@ def test_semantics_dimension_is_present_and_declares_its_scope_when_unmeasured()
 
 
 def test_semantics_dimension_is_used_verbatim_when_measured() -> None:
-    measured = {"title": "调度语义的代价", "status": "ok", "rows": [{"item": "优先级", "delta": 1.2}]}
-    model = build_model(_result([]), semantics=measured)
+    measured = {
+        "title": "调度语义的代价",
+        "status": "ok",
+        "rows": [{"item": "优先级", "delta": 1.2}],
+    }
+    model = build_model(_result([]), semantics=measured, lang=LANG_ZH)
     assert model["dimensions"]["semantics"] == measured
 
 
@@ -515,7 +540,7 @@ def test_every_dimension_is_present_even_when_its_probe_did_not_run() -> None:
 
     占位与"跑了但不可测"必须能区分（前者是遗漏、后者是结论），故两者的 ``status`` 不同。
     """
-    model = build_model(_result([]))
+    model = build_model(_result([]), lang=LANG_ZH)
 
     assert set(model["dimensions"]) == {
         "latency",
@@ -531,20 +556,31 @@ def test_every_dimension_is_present_even_when_its_probe_did_not_run() -> None:
 def test_subject_is_identified_by_tier_not_by_name() -> None:
     """被测框架靠 tier 识别，不靠写死名字——否则换名字就会静默失配。"""
     units = [
-        _unit("some-other-name", tier_us=300, e2e_per_task=0.0001, body=0.00008, meta={"tier": "under_test"}),
+        _unit(
+            "some-other-name",
+            tier_us=300,
+            e2e_per_task=0.0001,
+            body=0.00008,
+            meta={"tier": "under_test"},
+        ),
     ]
     assert subject_name(units) == "some-other-name"
 
 
 def test_model_has_no_subject_when_no_unit_claims_under_test() -> None:
-    model = build_model(_result([_unit("bare_thread", tier_us=300, e2e_per_task=0.0001, body=0.00008)]))
+    model = build_model(
+        _result([_unit("bare_thread", tier_us=300, e2e_per_task=0.0001, body=0.00008)]),
+        lang=LANG_ZH,
+    )
     assert model["subject"] is None
     assert model["conclusion"]["relative_turnings"] == []
 
 
 @pytest.mark.parametrize("name", ["latency", "overhead", "throughput"])
 def test_metric_dimensions_report_a_unit_and_a_note(name: str) -> None:
-    model = build_model(_result([_unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003)]))
+    model = build_model(
+        _result([_unit("zoo", tier_us=300, e2e_per_task=0.00035, body=0.0003)]), lang=LANG_ZH
+    )
     dimension = model["dimensions"][name]
     assert dimension["unit"]
     assert dimension["note"]
@@ -572,11 +608,13 @@ def _wide_and_narrow() -> list[dict[str, Any]]:
 
 def test_overhead_is_withheld_above_the_machines_parallelism() -> None:
     """并发度超过机器并行能力时，开销与交叉点都不给——那个减式的结果没有意义。"""
-    model = build_model(_result(_wide_and_narrow()), environment=_environment(4))
+    model = build_model(_result(_wide_and_narrow()), environment=_environment(4), lang=LANG_ZH)
 
     rows = {row["concurrency"]: row for row in model["dimensions"]["overhead"]["rows"]}
     assert rows[64]["interpretable"] is False
-    assert rows[64]["framework_overhead_seconds"] is None, "不可读时连数字都不给，别指望渲染层去判断"
+    assert rows[64]["framework_overhead_seconds"] is None, (
+        "不可读时连数字都不给，别指望渲染层去判断"
+    )
     assert rows[64]["framework_overhead_ratio"] is None
     assert rows[64]["body_seconds"] == 0.1065, "执行体自报值仍然有效，必须照旧给出"
     assert rows[4]["interpretable"] is True
@@ -591,7 +629,7 @@ def test_overhead_is_withheld_above_the_machines_parallelism() -> None:
 
 def test_the_withheld_groups_are_named_in_the_caliber_caveats() -> None:
     """撤下数字必须点名到组——读者要能一眼看出该跳过哪几行。"""
-    model = build_model(_result(_wide_and_narrow()), environment=_environment(4))
+    model = build_model(_result(_wide_and_narrow()), environment=_environment(4), lang=LANG_ZH)
 
     caveat = next(c for c in model["caveats"] if c["kind"] == "不给出开销数字的组")
     assert caveat["groups"] == ["zoo/64"]
@@ -606,8 +644,8 @@ def test_a_negative_overhead_is_withheld_even_with_plenty_of_cores() -> None:
     """
     units = [_subject_unit(tier_us=10000, e2e_per_task=0.0105, body=0.1065, concurrency=64)]
 
-    withheld = build_model(_result(units), environment=_environment(4))
-    survived = build_model(_result(units), environment=_environment(256))
+    withheld = build_model(_result(units), environment=_environment(4), lang=LANG_ZH)
+    survived = build_model(_result(units), environment=_environment(256), lang=LANG_ZH)
 
     assert withheld["dimensions"]["overhead"]["rows"][0]["interpretable"] is False
     assert survived["dimensions"]["overhead"]["rows"][0]["interpretable"] is False, (
@@ -619,7 +657,7 @@ def test_missing_environment_does_not_withhold_a_positive_overhead() -> None:
     """环境自述缺失时**不据此判否**：缺一项就把整列抹掉，比给一个可能无效的数字更坏。"""
     units = [_subject_unit(tier_us=300, e2e_per_task=0.0004, body=0.0003, concurrency=64)]
 
-    model = build_model(_result(units))
+    model = build_model(_result(units), lang=LANG_ZH)
 
     assert model["dimensions"]["overhead"]["rows"][0]["interpretable"] is True
     assert not any(c["kind"] == "不给出开销数字的组" for c in model["caveats"])
@@ -629,7 +667,11 @@ def test_summary_says_why_no_crossing_is_given_when_everything_is_withheld() -> 
     """全部组都不可读时，结论必须说清"是没给"而不是"没有一档达标"——两者含义相反。"""
     units = [_subject_unit(tier_us=10000, e2e_per_task=0.0105, body=0.1065, concurrency=64)]
 
-    summary = " ".join(build_model(_result(units), environment=_environment(4))["conclusion"]["summary"])
+    summary = " ".join(
+        build_model(_result(units), environment=_environment(4), lang=LANG_ZH)["conclusion"][
+            "summary"
+        ]
+    )
 
     assert "超出该机器并行能力" in summary
     assert "没有任何一档" not in summary, "不可读不能读成「测了但不达标」"
@@ -696,7 +738,7 @@ def test_attribution_names_the_segment_that_holds_the_excess() -> None:
         ]
     )
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
     dimension = model["dimensions"]["attribution"]
 
     assert dimension["status"] == "ok"
@@ -720,7 +762,7 @@ def test_attribution_lists_every_comparable_side_by_side() -> None:
         ]
     )
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     rows = model["dimensions"]["attribution"]["findings"][0]["per_adapter"]
     assert {row["adapter"] for row in rows} == {"thread_pool", "bare_thread"}
@@ -733,7 +775,7 @@ def test_attribution_skips_adapters_that_are_not_comparable() -> None:
     incomparable["comparable"] = False
     result["attribution"] = _attribution_result([_group("zoo", tier="under_test"), incomparable])
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     assert model["dimensions"]["attribution"]["findings"] == [], "没有可比对象时不给结论"
 
@@ -753,7 +795,7 @@ def test_attribution_keeps_groups_it_could_not_measure() -> None:
     }
     result["attribution"] = _attribution_result([_group("zoo", tier="under_test"), unmeasurable])
 
-    dimension = build_model(result)["dimensions"]["attribution"]
+    dimension = build_model(result, lang=LANG_ZH)["dimensions"]["attribution"]
 
     kept = next(group for group in dimension["groups"] if group["adapter"] == "process_pool")
     assert kept["status"] == "not_measurable"
@@ -773,7 +815,7 @@ def test_attribution_reports_the_subject_drill_down_separately() -> None:
         [_group("zoo", tier="under_test", drill=drill), _group("thread_pool")]
     )
 
-    dimension = build_model(result)["dimensions"]["attribution"]
+    dimension = build_model(result, lang=LANG_ZH)["dimensions"]["attribution"]
 
     assert dimension["findings"][0]["subject_drill_down"] == drill
     assert any("策略查询" in line for line in dimension["summary"]), "细分要进结论句"
@@ -784,7 +826,7 @@ def test_attribution_is_marked_unprobed_when_the_probe_never_ran() -> None:
     result = _result([])
     result["attribution"] = None
 
-    dimension = build_model(result)["dimensions"]["attribution"]
+    dimension = build_model(result, lang=LANG_ZH)["dimensions"]["attribution"]
 
     assert dimension["status"] == "not_probed"
     assert dimension["reason"]
@@ -806,7 +848,7 @@ def test_attribution_does_not_claim_a_dominant_segment_when_the_framework_is_not
         ]
     )
 
-    summary = build_model(result)["dimensions"]["attribution"]["summary"]
+    summary = build_model(result, lang=LANG_ZH)["dimensions"]["attribution"]["summary"]
 
     text = " ".join(summary)
     assert "整体不慢于" in text
@@ -825,7 +867,7 @@ def test_attribution_flags_a_negative_segment_even_when_the_total_is_positive() 
         ]
     )
 
-    summary = build_model(result)["dimensions"]["attribution"]["summary"]
+    summary = build_model(result, lang=LANG_ZH)["dimensions"]["attribution"]["summary"]
 
     text = " ".join(summary)
     assert "多花" in text and "提交侧" in text
@@ -851,7 +893,11 @@ def _pair_with(
     """
     units = [
         _subject_unit(
-            tier_us=tier_us, e2e_per_task=0.0004, body=0.0003, concurrency=concurrency, jitter=jitter
+            tier_us=tier_us,
+            e2e_per_task=0.0004,
+            body=0.0003,
+            concurrency=concurrency,
+            jitter=jitter,
         ),
     ]
     units.extend(
@@ -878,7 +924,7 @@ def test_favorable_and_unfavorable_are_complementary_halves_of_the_same_source()
     """
     result = _pair_with({"thread_pool": 1.5, "bare_thread": 0.7})
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     favorable = {(item["baseline"], item["body_tier_us"]) for item in model["favorable"]["items"]}
     unfavorable = {
@@ -894,7 +940,7 @@ def test_favorable_section_may_be_empty_without_voiding_the_report() -> None:
     """优势为空**不构成不合格**（与不利数据相反）：所测档位处处更慢时它就应当是空的。"""
     result = _pair_with({"thread_pool": 0.6})
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     assert model["favorable"]["found"] is False
     assert model["favorable"]["items"] == []
@@ -905,7 +951,7 @@ def test_summary_carries_a_positive_sentence_from_the_same_ratios() -> None:
     """摘要要有正面那一句——只讲"对照方案从多大档位起不再更快"是个负向表述，读者得自己反推。"""
     result = _pair_with({"thread_pool": 1.5, "bare_thread": 0.7})
 
-    summary = " ".join(build_model(result)["conclusion"]["summary"])
+    summary = " ".join(build_model(result, lang=LANG_ZH)["conclusion"]["summary"])
 
     assert "被测框架比 thread_pool 快 1.50x" in summary
     assert "显著" not in summary and "大幅" not in summary, "不给评价词，只给同源数字"
@@ -936,7 +982,9 @@ def test_advantage_chart_covers_every_sampled_concurrency(tmp_path: Path) -> Non
             "ratios_vs_subject": {"thread_pool": 0.8},
         },
     ]
-    model = build_model(_result(units, comparisons), environment={"hardware": {"logical_cores": 8}})
+    model = build_model(
+        _result(units, comparisons), environment={"hardware": {"logical_cores": 8}}, lang=LANG_ZH
+    )
 
     chart = charts.relative_multiple_chart(model, tmp_path)
 
@@ -950,7 +998,7 @@ def test_noise_level_difference_lands_in_tied_not_in_either_side() -> None:
     """差异小于带宽时归"分不出胜负"——把噪声报成「快 1.00x」正是这次重设计要消掉的东西。"""
     result = _pair_with({"thread_pool": 1.01})
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     assert model["favorable"]["items"] == []
     assert model["unfavorable"]["items"] == []
@@ -965,8 +1013,8 @@ def test_the_band_scales_with_the_runs_own_dispersion() -> None:
     这条证明带宽**不是写死的百分比**——它随同一次运行的离散度变。写死一个值的话，噪声小的机器
     上会过宽（把真差异藏掉）、噪声大的机器上过窄（把噪声当信号）。
     """
-    calm = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.02))
-    noisy = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.30))
+    calm = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.02), lang=LANG_ZH)
+    noisy = build_model(_pair_with({"thread_pool": 1.20}, jitter=0.30), lang=LANG_ZH)
 
     assert calm["favorable"]["found"] is True, "抖动 2% 时 20% 的差异分得出"
     assert noisy["favorable"]["found"] is False, "抖动 30% 时同一条差异分不出"
@@ -978,7 +1026,7 @@ def test_missing_rounds_means_no_verdict_rather_than_a_guessed_band() -> None:
     """缺少逐轮样本时不判，并写明原因——编一个默认带宽等于让一个无法复核的数参与结论。"""
     result = _pair_with({"thread_pool": 1.50}, rounds=False)
 
-    model = build_model(result)
+    model = build_model(result, lang=LANG_ZH)
 
     assert model["favorable"]["found"] is False, "判不了就不能说它更快"
     assert len(model["tied"]["items"]) == 1
@@ -988,7 +1036,7 @@ def test_missing_rounds_means_no_verdict_rather_than_a_guessed_band() -> None:
 
 def test_the_band_and_its_definition_travel_with_the_report() -> None:
     """带宽的数值与算法都要随报告给出，读者才能复核某个"分不出胜负"的判定。"""
-    model = build_model(_pair_with({"thread_pool": 1.01}))
+    model = build_model(_pair_with({"thread_pool": 1.01}), lang=LANG_ZH)
 
     band = model["tie_band"]
     assert "跨轮相对离散度" in band["definition"]

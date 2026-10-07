@@ -56,7 +56,7 @@ def gil_mode() -> str:
     return "free-threaded" if not probe() else "default"
 
 
-def cpu_model() -> tuple[str | None, str]:
+def cpu_model() -> tuple[str | None, str, dict[str, Any]]:
     """CPU 型号及其来源。
 
     Returns:
@@ -69,10 +69,10 @@ def cpu_model() -> tuple[str | None, str]:
             with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
                 for line in handle:
                     if line.lower().startswith("model name"):
-                        return line.split(":", 1)[1].strip(), "/proc/cpuinfo"
+                        return line.split(":", 1)[1].strip(), "/proc/cpuinfo", {}
         except OSError as exc:
-            return None, f"读取 /proc/cpuinfo 失败：{exc}"
-        return None, "/proc/cpuinfo 中没有 model name 字段"
+            return None, "env.cpu.proc_unreadable", {"error": str(exc)}
+        return None, "env.cpu.proc_no_model", {}
 
     if system == "Windows":
         try:
@@ -86,14 +86,14 @@ def cpu_model() -> tuple[str | None, str]:
                 value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
             finally:
                 winreg.CloseKey(key)
-            return str(value).strip(), r"注册表 ProcessorNameString"
+            return str(value).strip(), "env.cpu.registry_read", {}
         except OSError as exc:
-            return None, f"读取注册表失败：{exc}"
+            return None, "env.cpu.registry_failed", {"error": str(exc)}
 
     if system == "Darwin":
         sysctl = shutil.which("sysctl")
         if sysctl is None:
-            return None, "找不到 sysctl"
+            return None, "env.cpu.no_sysctl", {}
         completed = subprocess.run(
             [sysctl, "-n", "machdep.cpu.brand_string"],
             capture_output=True,
@@ -101,14 +101,14 @@ def cpu_model() -> tuple[str | None, str]:
             check=False,
         )
         if completed.returncode == 0 and completed.stdout.strip():
-            return completed.stdout.strip(), "sysctl machdep.cpu.brand_string"
-        return None, f"sysctl 返回 {completed.returncode}"
+            return completed.stdout.strip(), "sysctl machdep.cpu.brand_string", {}
+        return None, "env.cpu.sysctl_failed", {"code": completed.returncode}
 
     # 刻意不退回 platform.processor()：它在多个平台上返回架构串而非型号，冒充型号会误导读者
-    return None, f"暂不支持从 {system} 取 CPU 型号"
+    return None, "env.cpu.unsupported_system", {"system": system}
 
 
-def harness_commit() -> tuple[str | None, str]:
+def harness_commit() -> tuple[str | None, str, dict[str, Any]]:
     """zoo-bench 自身的 commit 标识及其来源。
 
     **依次尝试多个根**：当前工作目录优先，其次包所在目录。实测踩过这个坑——只取包所在目录时，
@@ -117,7 +117,7 @@ def harness_commit() -> tuple[str | None, str]:
     """
     git = shutil.which("git")
     if git is None:
-        return None, "找不到 git"
+        return None, "env.git.not_found", {}
 
     attempts: list[str] = []
     for root in (Path.cwd(), Path(_PACKAGE_ROOT)):
@@ -128,10 +128,10 @@ def harness_commit() -> tuple[str | None, str]:
             check=False,
         )
         if completed.returncode == 0 and completed.stdout.strip():
-            return completed.stdout.strip(), f"git -C {root} rev-parse HEAD"
+            return completed.stdout.strip(), f"git -C {root} rev-parse HEAD", {}
         attempts.append(str(root))
 
-    return None, f"以下路径都不是 git 仓库：{attempts}"
+    return None, "env.git.not_a_repo", {"attempts": attempts}
 
 
 def collect(command: list[str] | None = None) -> dict[str, Any]:
@@ -146,14 +146,15 @@ def collect(command: list[str] | None = None) -> dict[str, Any]:
     """
     from . import __version__ as harness_version
 
-    model, model_source = cpu_model()
-    commit, commit_source = harness_commit()
+    model, model_source, model_source_params = cpu_model()
+    commit, commit_source, commit_source_params = harness_commit()
     uname = platform.uname()
 
     return {
         "hardware": {
             "cpu_model": model,
             "cpu_model_source": model_source,
+            "cpu_model_source_params": model_source_params,
             "logical_cores": os.cpu_count(),
             "platform": f"{uname.system}-{uname.machine}",
         },
@@ -175,6 +176,7 @@ def collect(command: list[str] | None = None) -> dict[str, Any]:
             "version": harness_version,
             "commit": commit,
             "commit_source": commit_source,
+            "commit_source_params": commit_source_params,
         },
         "command": list(command if command is not None else sys.argv),
     }
@@ -208,12 +210,21 @@ def drive_generation() -> dict[str, Any]:
     下来，同一份报告里看不出被测对象是按哪套派发面驱动的。
 
     **任何失败都如实记为不可用**：自述采集不该让整轮测量失败（判定失败会在测量单元里以更
-    完整的形式报出来），故这里把异常转成 ``error`` 字段。
+    完整的形式报出来），故这里把异常转成 ``error`` 字段。判定失败时转的是**键化载荷**
+    （``error`` 为目录键、``error_params`` 为探测结果），渲染时才按语言编成人读的说明——
+    留档里不留散文，design D8。
     """
-    try:
-        from .generations import probe_drive_generation
+    from .generations import GenerationNotDrivable, probe_drive_generation
 
+    try:
         return probe_drive_generation()
+    except GenerationNotDrivable as exc:
+        return {
+            "generation": None,
+            "label": None,
+            "error": "generations.mismatch",
+            "error_params": exc.payload,
+        }
     except Exception as exc:
         return {"generation": None, "label": None, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -231,7 +242,7 @@ def _subject_identity() -> dict[str, Any]:
         "module_path": None,
         "install_source": install_source(),
         "drive_generation": drive_generation(),
-        "note": "以 dist_version（发行元数据）为版本真源；module_version 仅作附注",
+        "note": "env.subject.version_note",
     }
 
     try:

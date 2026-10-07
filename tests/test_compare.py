@@ -15,13 +15,16 @@ from typing import Any
 import pytest
 
 from zoo_bench import cli, compare, storage
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import compare as compare_renderer
 
 BEFORE = "zoo-framework==1.0.0"
 AFTER = "zoo-framework==2.0.0"
 
 
-def _unit(adapter: str, concurrency: int, tier_us: float, overhead: float, median: float) -> dict[str, Any]:
+def _unit(
+    adapter: str, concurrency: int, tier_us: float, overhead: float, median: float
+) -> dict[str, Any]:
     """一个测量单元。
 
     ``framework_overhead_seconds`` 按留档里的真实关系给出（开销 = 占比 × 每任务端到端），
@@ -93,7 +96,9 @@ def _pair() -> tuple[dict[str, Any], dict[str, Any]]:
 
 def test_comparison_reports_direction_and_magnitude() -> None:
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     row = next(r for r in result["overhead_ratio"] if r["adapter"] == "zoo")
     assert row["direction"] == "下降", "开销占比从 30% 降到 18%，方向该是下降"
@@ -107,7 +112,9 @@ def test_comparison_reports_direction_and_magnitude() -> None:
 def test_comparison_marks_flat_changes_as_flat() -> None:
     before, after = _pair()
     after["units"][1]["absolute"]["framework_overhead_ratio"] = 0.10
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     row = next(r for r in result["overhead_ratio"] if r["adapter"] == "thread_pool")
     assert row["direction"] == "持平"
@@ -116,7 +123,9 @@ def test_comparison_marks_flat_changes_as_flat() -> None:
 def test_metrics_declare_what_rising_means() -> None:
     """方向本身不带好坏含义——"上升"是变好还是变坏取决于度量。故每项度量都要自述。"""
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert "下降即开销摊薄得更好" in result["metric_semantics"]["overhead_ratio"]
     assert "上升即被测框架相对更快" in result["metric_semantics"]["speedup_vs_baseline"]
@@ -128,7 +137,9 @@ def test_metrics_declare_what_rising_means() -> None:
 def test_absolute_durations_are_present_but_marked_not_comparable() -> None:
     """D6：绝对耗时跨运行不可比。它可以在场，但**不能作为版本差异的证据**。"""
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["absolute_seconds"], "绝对耗时应在场，供读者看量级"
     assert "不可跨运行比较" in result["absolute_note"]
@@ -140,7 +151,9 @@ def test_units_present_in_only_one_side_are_reported_not_dropped() -> None:
     before, after = _pair()
     after["units"].append(_unit("zoo", 4, 2700.0, 0.05, 0.003))  # 2.0 新增的档位
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["shared_unit_count"] == 2
     assert [item["present_in"] for item in result["only_in_one"]] == ["after"]
@@ -152,7 +165,9 @@ def test_environment_difference_is_flagged() -> None:
     before, after = _pair()
     after["environment"]["hardware"]["cpu_model"] = "CPU B"
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["environment"]["same"] is False
     # 键用点分路径，读者一眼看得出差异落在环境的哪一层
@@ -162,7 +177,9 @@ def test_environment_difference_is_flagged() -> None:
 
 def test_same_environment_is_reported_as_same() -> None:
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["environment"]["same"] is True
     assert result["environment"]["differences"] == {}
@@ -180,7 +197,9 @@ def test_differing_drive_surfaces_are_flagged_with_their_effect_on_the_numbers()
         "label": "（合成）",
     }
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["drive_generation"]["same"] is False
     assert result["drive_generation"]["before"]["generation"] == "previous"
@@ -191,7 +210,9 @@ def test_differing_drive_surfaces_are_flagged_with_their_effect_on_the_numbers()
 
 def test_same_drive_surface_is_reported_as_comparable() -> None:
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["drive_generation"]["same"] is True
     assert "口径一致" in result["drive_generation"]["note"]
@@ -202,7 +223,9 @@ def test_missing_drive_surface_is_reported_as_unknown_not_assumed_same() -> None
     before, after = _pair()
     after["environment"]["subject"].pop("drive_generation", None)
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["drive_generation"]["same"] is False
     assert "无法判断两侧的读数口径是否一致" in result["drive_generation"]["note"]
@@ -215,7 +238,9 @@ def test_a_side_that_failed_self_check_makes_the_comparison_void() -> None:
     before, after = _pair()
     after["self_check"]["ok"] = False
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
     text = compare_renderer.render_markdown(result)
 
     assert result["after"]["self_check_ok"] is False
@@ -234,7 +259,7 @@ def test_comparison_renders_every_section() -> None:
         "label": "（合成）",
     }
     text = compare_renderer.render_markdown(
-        compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+        compare.compare_versions(before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH)
     )
 
     for section in (
@@ -253,7 +278,9 @@ def test_comparison_renders_every_section() -> None:
 def test_comparison_markdown_and_html_read_the_same_result() -> None:
     """同源：扰动对比结果，两个后端都得跟着变。"""
     before, after = _pair()
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     result["overhead_ratio"][0]["direction"] = "下降"
 
@@ -297,7 +324,13 @@ def test_compare_writes_every_artifact(tmp_path: Path) -> None:
     assert code == 0
     assert (out / "compare.md").is_file()
     assert (out / "index.html").is_file()
-    assert "版本对比" in (out / "compare.md").read_text(encoding="utf-8")
+    # 英文为主（design D3）：根目录的三件套是英文对比；中文对比页在 zh/ 子目录下（与版本页同一套
+    # 镜像规则——语言切换链接的层数约定依赖这个结构）
+    assert "version comparison" in (out / "compare.md").read_text(encoding="utf-8")
+    zh = out / "zh"
+    assert (zh / "compare.md").is_file()
+    assert (zh / "index.html").is_file()
+    assert "版本对比" in (zh / "compare.md").read_text(encoding="utf-8")
 
     payload = json.loads((out / "compare.json").read_text(encoding="utf-8"))
     assert payload["before"]["label"] == "1.0.0"
@@ -320,7 +353,9 @@ def test_overhead_change_is_withheld_above_the_machines_parallelism() -> None:
     before = _run([_unit("zoo", 64, 300.0, 0.30, 0.0004)])
     after = _run([_unit("zoo", 64, 300.0, 0.31, 0.0005)], version="2.0")
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     row = result["overhead_ratio"][0]
     assert row["interpretable"] is False
@@ -335,7 +370,9 @@ def test_overhead_change_survives_within_the_machines_capacity() -> None:
     before = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)])
     after = _run([_unit("zoo", 4, 300.0, 0.15, 0.0004)], version="2.0")
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     row = result["overhead_ratio"][0]
     assert row["interpretable"] is True
@@ -351,13 +388,13 @@ def test_a_negative_overhead_is_withheld_even_at_a_high_core_count() -> None:
     positive = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)], cores=256)
     positive_after = _run([_unit("zoo", 4, 300.0, 0.20, 0.0004)], version="2.0", cores=256)
     readable = compare.compare_versions(
-        positive, positive_after, before_label="1.0", after_label="2.0"
+        positive, positive_after, before_label="1.0", after_label="2.0", lang=LANG_ZH
     )
 
     negative = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], cores=256)
     negative_after = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], version="2.0", cores=256)
     withheld = compare.compare_versions(
-        negative, negative_after, before_label="1.0", after_label="2.0"
+        negative, negative_after, before_label="1.0", after_label="2.0", lang=LANG_ZH
     )
 
     assert readable["overhead_ratio"][0]["interpretable"] is True
@@ -373,7 +410,9 @@ def test_either_side_being_unreadable_withholds_the_row() -> None:
     before = _run([_unit("zoo", 4, 300.0, 0.30, 0.0004)], cores=256)
     after = _run([_unit("zoo", 4, 300.0, -9.1, 0.0105)], version="2.0", cores=256)
 
-    result = compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+    result = compare.compare_versions(
+        before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH
+    )
 
     assert result["shared_unit_count"] == 1
     assert result["overhead_ratio"][0]["interpretable"] is False
@@ -385,7 +424,7 @@ def test_compare_page_explains_what_an_unreadable_row_means() -> None:
     after = _run([_unit("zoo", 64, 300.0, 0.31, 0.0005)], version="2.0")
 
     text = compare_renderer.render_markdown(
-        compare.compare_versions(before, after, before_label="1.0", after_label="2.0")
+        compare.compare_versions(before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH)
     )
 
     assert "不可读" in text

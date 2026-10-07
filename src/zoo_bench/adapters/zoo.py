@@ -105,19 +105,10 @@ class ZooAdapter(BaseAdapter):
 
     name = "zoo"
     tier = Tier.UNDER_TEST
-    drive_level = (
-        "调度派发层：直接驱动 BaseWaiter.execute_service()（线程池模式），"
-        "不走 Master 的完整运行循环——后者的服务循环每秒一次，会把延迟量级从微秒抬到秒。"
-        "**每提交一个任务走一次调度轮**，故该轮的全部簿记都计在这一个任务头上；"
-        "Master 的用法是每轮服务多个 worker，那份开销本会摊到多个任务上"
-    )
-    notes = (
-        "端到端终点为「worker 完成并在飞表注销」；框架其后的结果投递按世代分流："
-        "上一代的投递路径是坏的（dispatch 按 reactor_name 而非主题查响应器，每次调用必抛），"
-        "完成信号只能取自框架内部回调；当前代该处已修好，完成信号取自框架自己的结果响应器。"
-        "**口径说明**：完成信号由本档的 Condition 给出，每任务一次通知的开销计入其端到端；"
-        "该方向的偏差使被测框架看起来更慢，即对被测框架不利而非有利"
-    )
+    #: 自述存**目录键**而不是散文：留档因此是语言无关的数据，同一份留档能出两种语言的报告
+    #: （design D8）。渲染侧经 ``resolve_text`` 解析，见 ``render/blocks.py``。
+    drive_level = "adapters.drive_level.zoo"
+    notes = "adapters.notes.zoo"
 
     def setup(self, *, workers: int) -> None:
         # 世代判定先于任何驱动动作：判定不出来就抛出，**不留下可驱动的状态**

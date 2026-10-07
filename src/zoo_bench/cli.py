@@ -24,10 +24,12 @@ from packaging.version import InvalidVersion, Version
 
 from . import compare, environment, storage
 from . import matrix as matrix_module
+from .i18n import LANG_EN, LANG_ZH, t
 from .render import compare as compare_renderer
 from .render import index as site_index
 from .render import report as report_renderer
 from .render.assets import write_style
+from .render.links import subtree_path
 from .report import OVERHEAD_THRESHOLD, build_model
 from .runner import (
     DEFAULT_MEASURED_ROUNDS,
@@ -193,8 +195,12 @@ def render_command(args: argparse.Namespace) -> int:
         return 2
 
     result = storage.load_run(data_path)
-    model = build_model(result)
-    model["source"] = {"path": str(data_path)}
+    # 两种语言各建一份模型（design D7：调用方一次调用、两棵语言树）；门禁读哪份都一样——
+    # 环境自述、自检、被测对象与不利集都是语言无关的事实。
+    models = {lang: build_model(result, lang=lang) for lang in (LANG_EN, LANG_ZH)}
+    model = models[LANG_ZH]
+    for lang_model in models.values():
+        lang_model["source"] = {"path": str(data_path)}
 
     if model["environment"] is None:
         print(
@@ -238,21 +244,22 @@ def render_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 4
-        model["caveats"].append(
-            {
-                "kind": "发布豁免",
-                "text": "本轮测量既不含被测框架处于劣势的档位、也不含分不出胜负的档位，"
-                "经 --allow-empty-unfavorable "
-                "显式豁免发布。该豁免是审计线索：再次出现同样情形时应先检查档位选择与"
-                "测量是否正常，而不是习惯性地豁免。",
-            }
-        )
+        # 豁免注随模型进报告，两种语言的产物各要一份自己语言的
+        for lang_model in models.values():
+            lang_model["caveats"].append(
+                {
+                    "kind": t("report.caveat.exemption.kind", lang_model["lang"]),
+                    "text": t("report.caveat.exemption.text", lang_model["lang"]),
+                }
+            )
 
-    outcome = report_renderer.render(model, args.out, threshold=OVERHEAD_THRESHOLD)
-    print(f"报告：{outcome['html']}")
-    print(f"Markdown：{outcome['markdown']}")
-    print(f"PDF：{outcome['pdf']}")
-    font = outcome.get("font") or {}
+    outcome = report_renderer.render_site(models, args.out, threshold=OVERHEAD_THRESHOLD)
+    # CLI 面向维护者，提示保持中文；两种语言的产物路径都报出来
+    print(f"报告（英文）：{outcome[LANG_EN]['html']}")
+    print(f"报告（中文）：{outcome[LANG_ZH]['html']}")
+    print(f"Markdown：{outcome[LANG_ZH]['markdown']}")
+    print(f"PDF：{outcome[LANG_ZH]['pdf']}")
+    font = outcome[LANG_ZH].get("font") or {}
     if font.get("path"):
         print(f"PDF 字体：{font['path']}（face {font.get('face_index')}）")
         for skipped in font.get("skipped", []):
@@ -297,29 +304,50 @@ def compare_command(args: argparse.Namespace) -> int:
         print("以下版本没有留档数据，无法对比：", file=sys.stderr)
         for label, spec in missing:
             print(f"  - {label}：{spec}", file=sys.stderr)
-        print(f"已留档的版本：{storage.available_frameworks(root=args.results) or '（无）'}", file=sys.stderr)
+        print(
+            f"已留档的版本：{storage.available_frameworks(root=args.results) or '（无）'}",
+            file=sys.stderr,
+        )
         return 7
 
-    comparison = compare.compare_versions(
-        storage.load_run(before_path),
-        storage.load_run(after_path),
-        before_label=args.before,
-        after_label=args.after,
-    )
+    # 两种语言各算一份对比（散文随语言落值）；布局与报告页同一套镜像规则：英文挂在输出目录
+    # 根、中文挂 zh/ 子目录——语言切换链接的层数约定依赖这个结构。
+    comparisons = {
+        lang: compare.compare_versions(
+            storage.load_run(before_path),
+            storage.load_run(after_path),
+            before_label=args.before,
+            after_label=args.after,
+            lang=lang,
+        )
+        for lang in (LANG_EN, LANG_ZH)
+    }
+    comparison = comparisons[LANG_ZH]
 
     if not args.out:
         print(compare_renderer.render_markdown(comparison))
         return 0
 
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    zh_dir = out / subtree_path(LANG_ZH)
+    zh_dir.mkdir(parents=True, exist_ok=True)
     write_style(out)
-    (out / "compare.md").write_text(compare_renderer.render_markdown(comparison), encoding="utf-8")
-    (out / "index.html").write_text(compare_renderer.render_html(comparison), encoding="utf-8")
-    # 同时留一份机器可读的结果：站点首页据此列出对比页并显示"两侧是否自检通过"（读者据此判断
-    # 这份对比可不可信），也让对比里的每一项数字都能被复核——与留档同源，而不是只存在于 HTML 里。
+    # 英文为主（design D3）：根目录的三件套来自英文对比；compare.json 是语言无关的机器可读
+    # 结果，只留一份——站点首页据此列出对比页并显示"两侧是否自检通过"，也让每一项数字可复核。
+    (out / "compare.md").write_text(
+        compare_renderer.render_markdown(comparisons[LANG_EN]), encoding="utf-8"
+    )
+    (out / "index.html").write_text(
+        compare_renderer.render_html(comparisons[LANG_EN]), encoding="utf-8"
+    )
     (out / "compare.json").write_text(
-        json.dumps(comparison, ensure_ascii=False), encoding="utf-8"
+        json.dumps(comparisons[LANG_EN], ensure_ascii=False), encoding="utf-8"
+    )
+    (zh_dir / "compare.md").write_text(
+        compare_renderer.render_markdown(comparisons[LANG_ZH]), encoding="utf-8"
+    )
+    (zh_dir / "index.html").write_text(
+        compare_renderer.render_html(comparisons[LANG_ZH]), encoding="utf-8"
     )
     print(f"对比：{out / 'index.html'}")
     return 0
@@ -355,7 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--concurrency", help="逗号分隔，覆盖并发度档位")
     run_parser.add_argument("--tiers", help="逗号分隔，覆盖执行体档位（微秒）")
     run_parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP_ROUNDS, help="预热轮数")
-    run_parser.add_argument("--rounds", type=int, default=DEFAULT_MEASURED_ROUNDS, help="正式采样轮数")
+    run_parser.add_argument(
+        "--rounds", type=int, default=DEFAULT_MEASURED_ROUNDS, help="正式采样轮数"
+    )
     run_parser.set_defaults(handler=run_command)
 
     render_parser = subparsers.add_parser("render", help="由留档数据产出报告")

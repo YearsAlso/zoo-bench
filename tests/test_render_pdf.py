@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from pypdf import PdfReader
 
+from zoo_bench.i18n import LANG_ZH
 from zoo_bench.render import report as report_renderer
 from zoo_bench.render.fonts import CjkFontUnavailable, find_pdf_font
 from zoo_bench.runner import ABSOLUTE_NOTE
@@ -25,12 +26,17 @@ def _model() -> dict[str, Any]:
     """够渲染的小模型：含中文、表格与两个维度。"""
     summary = {"median": 0.00035, "p95": 0.0004, "p99": 0.00045, "relative_spread": 0.05}
     return {
+        "lang": LANG_ZH,
         "source": {"path": "results/x.json"},
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
             "os": {"system": "TestOS", "release": "1", "version": "1.0"},
             "python": {"version": "3.13.0", "implementation": "CPython", "executable": "/py"},
-            "subject": {"dist_version": "9.9.9", "module_version": "1.0", "note": "以发行元数据为准"},
+            "subject": {
+                "dist_version": "9.9.9",
+                "module_version": "1.0",
+                "note": "以发行元数据为准",
+            },
             "harness": {"version": "0.0.1", "commit": "deadbeef"},
             "command": ["zoo-bench", "run"],
         },
@@ -48,25 +54,38 @@ def _model() -> dict[str, Any]:
                 "title": "延迟分位数与抖动",
                 "note": "端到端 / 并发度",
                 "rows": [
-                    {"adapter": "zoo", "concurrency": 4, "body_tier_us": 300.0,
-                     "end_to_end_per_task": dict(summary)}
+                    {
+                        "adapter": "zoo",
+                        "concurrency": 4,
+                        "body_tier_us": 300.0,
+                        "end_to_end_per_task": dict(summary),
+                    }
                 ],
             },
             "overhead": {
                 "title": "框架自身开销占比",
                 "note": "同一次运行内埋点",
                 "rows": [
-                    {"adapter": "zoo", "concurrency": 4, "body_tier_us": 300.0,
-                     "framework_overhead_seconds": 0.0001, "framework_overhead_ratio": 0.26,
-                     "body_seconds": 0.0003}
+                    {
+                        "adapter": "zoo",
+                        "concurrency": 4,
+                        "body_tier_us": 300.0,
+                        "framework_overhead_seconds": 0.0001,
+                        "framework_overhead_ratio": 0.26,
+                        "body_seconds": 0.0003,
+                    }
                 ],
             },
             "throughput": {
                 "title": "吞吐与并发伸缩",
                 "note": "并发度 / 端到端中位数",
                 "rows": [
-                    {"adapter": "zoo", "concurrency": 4, "body_tier_us": 300.0,
-                     "throughput_per_second": 7000.0}
+                    {
+                        "adapter": "zoo",
+                        "concurrency": 4,
+                        "body_tier_us": 300.0,
+                        "throughput_per_second": 7000.0,
+                    }
                 ],
             },
             "semantics": {
@@ -79,9 +98,14 @@ def _model() -> dict[str, Any]:
         },
         "unfavorable": {
             "items": [
-                {"baseline": "bare_thread", "concurrency": 4, "body_tier_us": 300.0,
-                 "subject_median_seconds": 0.00035, "baseline_ratio_vs_subject": 0.8,
-                 "gap": "bare_thread 比 zoo 快 1.25x"}
+                {
+                    "baseline": "bare_thread",
+                    "concurrency": 4,
+                    "body_tier_us": 300.0,
+                    "subject_median_seconds": 0.00035,
+                    "baseline_ratio_vs_subject": 0.8,
+                    "gap": "bare_thread 比 zoo 快 1.25x",
+                }
             ],
             "found": True,
             "note": "不利数据缺失的报告不合格",
@@ -191,10 +215,12 @@ def test_report_text_uses_only_renderable_characters() -> None:
     from zoo_bench.render.blocks import build_blocks, unsafe_characters
     from zoo_bench.render.pdf import blocks_text
 
-    text = blocks_text(build_blocks(_model(), []))
+    text = blocks_text(build_blocks(_model(), [], lang=LANG_ZH))
     unsafe = unsafe_characters(text)
 
-    assert not unsafe, f"报告正文里出现了中文字体不一定有的字符：{[f'U+{ord(c):04X}' for c in unsafe]}"
+    assert not unsafe, (
+        f"报告正文里出现了中文字体不一定有的字符：{[f'U+{ord(c):04X}' for c in unsafe]}"
+    )
 
 
 def test_unsafe_characters_are_named_with_a_replacement() -> None:
@@ -202,7 +228,7 @@ def test_unsafe_characters_are_named_with_a_replacement() -> None:
     from zoo_bench.render.blocks import UnsafeReportText, assert_report_text_is_renderable
 
     with pytest.raises(UnsafeReportText) as excinfo:
-        assert_report_text_is_renderable("开销 = 端到端 − 执行体")
+        assert_report_text_is_renderable("开销 = 端到端 − 执行体", lang=LANG_ZH)
 
     message = str(excinfo.value)
     assert "U+2212" in message

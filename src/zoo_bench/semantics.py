@@ -45,18 +45,11 @@ ENFORCEMENT_RATIO = 0.5
 #: 数字与真正用的上限各写一份、日后漂移。
 PROBE_DEADLINE_FACTOR = 4
 
-SCOPE_NOTE = (
-    "本维度采用**内部开关对照**（同一 workload 下语义全关 vs 逐个开启），"
-    "**不与对照方案横向比较**——裸写法没有优先级/超时/重试的对应物，"
-    "故只能回答“本框架的语义值多少钱”，不能回答“比裸写法贵多少”"
-)
+SCOPE_NOTE = "report.semantics.scope_note"
 
 #: 当前代"超时生效"的确切含义。**必须写进证据**：读者很容易把"摘除了"读成"被杀掉了"，而
 #: CPython 无法安全中断一个正在执行的线程——框架做的是观测与熔断，不是终止。
-REAP_SEMANTICS_NOTE = (
-    "；生效的是观测与熔断（记录、标记不健康、摘除在飞登记、停止派发），"
-    "**不是终止**仍在执行的 worker——CPython 无法安全中断线程"
-)
+REAP_SEMANTICS_NOTE = "semantics.reap_note"
 
 #: 事件层各项结论是在哪一代上得出的。
 #:
@@ -65,7 +58,7 @@ REAP_SEMANTICS_NOTE = (
 _EVENT_LAYER_DERIVED_ON = GENERATION_PREVIOUS
 
 #: 事件层枚举出的语义项。
-_EVENT_LAYER_ITEMS = ("优先级", "重试")
+_EVENT_LAYER_ITEMS = ("semantics.item.priority", "semantics.item.retry")
 
 
 def timeout_is_enforced(observed_seconds: float, body_seconds: float, limit_seconds: float) -> bool:
@@ -82,6 +75,7 @@ def timeout_is_enforced(observed_seconds: float, body_seconds: float, limit_seco
     Returns:
         摘除时刻显著早于执行体结束即判生效。
     """
+    # 该报错串只进探查方（CLI/stderr），不进报告文案——进报告的文案已入 i18n 目录（design D8 边界）。
     if limit_seconds <= 0 or limit_seconds >= body_seconds:
         raise ValueError("探查参数无效：run_timeout 必须为正且小于执行体耗时")
     return observed_seconds < body_seconds * ENFORCEMENT_RATIO
@@ -95,7 +89,7 @@ def _source_location(obj: Any) -> str:
     """
     code = getattr(obj, "__code__", None)
     if code is None:
-        return "源码坐标不可得"
+        return "semantics.location.unavailable"
     return f"{Path(str(code.co_filename)).name}:{code.co_firstlineno}"
 
 
@@ -175,12 +169,8 @@ def _timeout_reason(generation: str, enforced: bool) -> str:
     if enforced:
         return ""
     if generation == GENERATION_CURRENT:
-        return "本轮未观测到摘除：超时判定由调度轮触发，worker 须留在调度列表里才谈得上被判定"
-    return (
-        "判定存在但**执行动作未实现**：本探查按调度轮驱动、探查 worker 也声明了循环，调度轮"
-        "确实跑过，故未摘除只能是判定本身没有执行动作——开启它只多算一次减法，量到的不是"
-        "语义的代价"
-    )
+        return "semantics.reason.current_not_observed"
+    return "semantics.reason.previous_no_action"
 
 
 def probe_dispatch_timeout() -> dict[str, Any]:
@@ -239,26 +229,30 @@ def probe_dispatch_timeout() -> dict[str, Any]:
     # 以及**一直没离开**（读数是探查上限，不是一个观测值）。混成一句会让人拿"摘除时刻"
     # 去理解一个根本没发生的摘除。
     if not settled:
-        observed_text = f"探查上限（{PROBE_BODY_SECONDS * PROBE_DEADLINE_FACTOR:.2f}s）内始终未离开在飞表"
+        evidence = "semantics.evidence.deadline"
     elif enforced:
-        observed_text = f"在执行体结束之前离开在飞表（{observed:.4f}s）"
+        evidence = "semantics.evidence.reaped"
     else:
-        observed_text = f"直到执行体自然结束才离开在飞表（{observed:.4f}s）"
+        evidence = "semantics.evidence.natural"
     return {
-        "item": "超时",
-        "layer": "派发层",
-        "probe": "行为探查（按调度轮反复驱动，量在飞表摘除时刻）",
+        "item": "semantics.item.timeout",
+        "layer": "semantics.layer.dispatch",
+        "probe": "semantics.probe.behavioral",
         "enforced": enforced,
         "observed_seconds": observed,
         "settled_observed": settled,
         "body_seconds": PROBE_BODY_SECONDS,
         "limit_seconds": PROBE_LIMIT_SECONDS,
         "derived_on": generation,
-        "evidence": (
-            f"{'已' if enforced else '未'}观测到超时摘除：{observed_text}"
-            f"（执行体 {PROBE_BODY_SECONDS}s、run_timeout {PROBE_LIMIT_SECONDS}s）；"
-            f"判定动作在 {drive.judgment_location()}{note}"
-        ),
+        "evidence": evidence,
+        "evidence_params": {
+            "observed": observed,
+            "deadline": PROBE_BODY_SECONDS * PROBE_DEADLINE_FACTOR,
+            "body": PROBE_BODY_SECONDS,
+            "limit": PROBE_LIMIT_SECONDS,
+            "location": drive.judgment_location(),
+            "note": note,
+        },
         "usable": enforced,
         "reason": _timeout_reason(generation, enforced),
     }
@@ -269,21 +263,19 @@ def _unchecked_event_items(generation: str) -> list[dict[str, Any]]:
     return [
         {
             "item": name,
-            "layer": "事件层",
-            "probe": "结构探查（检查执行所需的符号是否存在）",
+            "layer": "semantics.layer.event",
+            "probe": "semantics.probe.structural",
             "enforced": None,
             "derived_on": _EVENT_LAYER_DERIVED_ON,
             "unchecked_on": generation,
-            "evidence": (
-                f"本项的结论与其坐标是在「{_EVENT_LAYER_DERIVED_ON}」代上得出的，"
-                f"当前装着的是「{generation}」代——两代的事件层接线不同，本项未在当前代上复核"
-            ),
+            "evidence": "semantics.evidence.unchecked",
+            "evidence_params": {
+                "derived_on": _EVENT_LAYER_DERIVED_ON,
+                "current": generation,
+            },
             "usable": False,
-            "reason": (
-                f"未复核：本项的结论是在「{_EVENT_LAYER_DERIVED_ON}」代上得出的，把它当成本代"
-                "的事实等于在报告里断言一个当前代并不具备的接线。重新推导需要单独一次探查设计"
-                "（每项要有干净的开/关态才谈得上定价）"
-            ),
+            "reason": "semantics.reason.unchecked",
+            "reason_params": {"derived_on": _EVENT_LAYER_DERIVED_ON},
         }
         for name in _EVENT_LAYER_ITEMS
     ]
@@ -298,7 +290,7 @@ def probe_event_layer() -> dict[str, Any]:
     generation = probe_drive_generation()["generation"]
     if generation != _EVENT_LAYER_DERIVED_ON:
         return {
-            "layer": "事件层",
+            "layer": "semantics.layer.event",
             "derived_on": _EVENT_LAYER_DERIVED_ON,
             "items": _unchecked_event_items(generation),
         }
@@ -306,40 +298,32 @@ def probe_event_layer() -> dict[str, Any]:
     from zoo_framework.reactor.event_reactor import EventReactor
 
     has_perform = hasattr(EventReactor, "perform")
-    blocker = (
-        ""
-        if has_perform
-        else "事件层执行反应器要先有 perform：EventWorker._execute 调 reactor.perform"
-        "（workers/event_worker.py），而 EventReactor 只定义了 execute"
-        "（reactor/event_reactor.py）——反应器一旦匹配即抛 AttributeError"
-    )
+    blocker = "" if has_perform else "semantics.evidence.no_perform"
 
     items: list[dict[str, Any]] = []
     for name, extra in (
         (
-            "优先级",
-            "EventPriorityCalculator 存在（fifo/node/event_fifo_node.py）但未接入 drain "
-            "循环——workers/event_worker.py 里“根据优先级排序”只有一句注释",
+            "semantics.item.priority",
+            "semantics.evidence.priority_not_wired",
         ),
         (
-            "重试",
-            "retry_times 的默认 0 是干净的关闭态，但触发条件是“没有匹配到反应器”，"
-            "而反应器路径本身不可执行",
+            "semantics.item.retry",
+            "semantics.evidence.retry_clean_default",
         ),
     ):
         items.append(
             {
                 "item": name,
-                "layer": "事件层",
-                "probe": "结构探查（检查执行所需的符号是否存在）",
+                "layer": "semantics.layer.event",
+                "probe": "semantics.probe.structural",
                 "enforced": None,
                 "derived_on": _EVENT_LAYER_DERIVED_ON,
                 "evidence": blocker or extra,
                 "usable": has_perform,
-                "reason": "" if has_perform else f"{blocker}。{extra}",
+                "reason": "" if has_perform else [blocker, extra],
             }
         )
-    return {"layer": "事件层", "derived_on": _EVENT_LAYER_DERIVED_ON, "items": items}
+    return {"layer": "semantics.layer.event", "derived_on": _EVENT_LAYER_DERIVED_ON, "items": items}
 
 
 def probe_semantics() -> dict[str, Any]:
@@ -357,19 +341,12 @@ def probe_semantics() -> dict[str, Any]:
     usable = [item for item in items if item["usable"]]
 
     return {
-        "title": "调度语义的代价",
+        "title": "report.semantics.title",
         "status": "ok" if usable else "not_measured",
         "derived_on": generation,
         "scope_note": SCOPE_NOTE,
         "items": items,
         "usable_items": [item["item"] for item in usable],
-        "reason": (
-            ""
-            if usable
-            else "在当前被测版本上，枚举出的语义项**没有一项可测**：要么其执行动作未实现，"
-            "要么所在层无法执行反应器。按 design D7 的逃生口，此类项被剔除而非用近似状态代替"
-        ),
-        "recheck_on_version_bump": (
-            "本结论按被测版本得出，坐标只对该版本成立；往 matrix.yaml 追加版本后须重跑本探查"
-        ),
+        "reason": "" if usable else "semantics.reason.none_usable",
+        "recheck_on_version_bump": "semantics.recheck_note",
     }

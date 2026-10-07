@@ -20,6 +20,7 @@ from zoo_bench.generations import (
     GENERATION_PREVIOUS,
     probe_drive_generation,
 )
+from zoo_bench.i18n import LANG_ZH, t
 from zoo_bench.report import build_model
 from zoo_bench.runner import UnitSpec, measure_matrix
 
@@ -82,7 +83,9 @@ def test_the_driving_method_is_recorded_with_the_conclusion() -> None:
     换代或改探查时，方法不进报告的话，"未观测到摘除"会被读成"这一代不支持超时"——两个结论
     完全相反，而报告上看不出区别。
     """
-    assert "按调度轮" in semantics.probe_dispatch_timeout()["probe"]
+    probe = semantics.probe_dispatch_timeout()["probe"]
+    assert probe == "semantics.probe.behavioral"
+    assert "按调度轮" in t(probe, LANG_ZH)
 
 
 def test_previous_generation_timeout_is_not_enforced() -> None:
@@ -98,7 +101,7 @@ def test_previous_generation_timeout_is_not_enforced() -> None:
     item = semantics.probe_dispatch_timeout()
     assert item["enforced"] is False
     assert item["reason"]
-    assert "执行动作未实现" in item["reason"]
+    assert item["reason"] == "semantics.reason.previous_no_action"
     assert item["usable"] is False
     assert item["settled_observed"] is True, "没观测到离开在飞表时，读数不是摘除时刻"
     assert item["observed_seconds"] < item["body_seconds"] * 2, (
@@ -123,8 +126,11 @@ def test_current_generation_timeout_is_enforced_and_says_what_that_means() -> No
         f"摘除时刻 {item['observed_seconds']:.4f}s 应落在 run_timeout 附近"
         f"（{item['limit_seconds']}s），而不是等执行体自然结束（{item['body_seconds']}s）"
     )
-    assert "不是终止" in item["evidence"], "生效的含义必须写进证据"
-    assert "判定动作在" in item["evidence"], "证据要给出判定动作的坐标，便于按版本核对"
+    assert item["evidence"] == "semantics.evidence.reaped", "生效的含义必须写进证据"
+    assert item["evidence_params"]["note"] == "semantics.reap_note", (
+        "生效的是观测与熔断、不是终止——这半句必须还在证据里"
+    )
+    assert item["evidence_params"]["location"], "证据要给出判定动作的坐标，便于按版本核对"
 
 
 def test_event_layer_probe_matches_the_claims_provenance() -> None:
@@ -151,7 +157,7 @@ def test_event_layer_probe_matches_the_claims_provenance() -> None:
         assert item["usable"] is False
         assert item["unchecked_on"] == INSTALLED
         assert item["derived_on"] == layer["derived_on"]
-        assert "未在当前代上复核" in item["evidence"]
+        assert item["evidence"] == "semantics.evidence.unchecked"
         assert item["reason"], "标为未复核必须说明原因"
 
 
@@ -169,7 +175,7 @@ def test_event_layer_does_not_reuse_another_generations_claims() -> None:
 
 def test_event_layer_enumerates_priority_and_retry() -> None:
     names = {item["item"] for item in semantics.probe_event_layer()["items"]}
-    assert names == {"优先级", "重试"}
+    assert names == {"semantics.item.priority", "semantics.item.retry"}
 
 
 # ------------------------------------------------------------------ 汇总与接入
@@ -210,9 +216,7 @@ def test_semantics_section_declares_the_generation_its_conclusions_hold_for() ->
             }
         }
     }
-    text = "\n".join(
-        block.text for block in blocks_module._dimension_blocks(model)
-    )
+    text = "\n".join(block.text for block in blocks_module._dimension_blocks(model, lang=LANG_ZH))
     assert GENERATION_CURRENT in text
     assert "代驱动面上得出" in text
 
@@ -256,12 +260,12 @@ def test_runner_can_omit_the_semantics_probe() -> None:
 def test_model_uses_the_probed_semantics_verbatim() -> None:
     probed: dict[str, Any] = {"title": "调度语义的代价", "status": "not_measured", "items": []}
     result = {"units": [], "run": {}, "relative": {"comparisons": []}, "semantics": probed}
-    assert build_model(result)["dimensions"]["semantics"] == probed
+    assert build_model(result, lang=LANG_ZH)["dimensions"]["semantics"] == probed
 
 
 def test_model_marks_semantics_as_not_probed_when_the_probe_never_ran() -> None:
     """没跑探查与跑了但不可测是两件事——前者是遗漏，后者是结论。"""
-    model = build_model({"units": [], "run": {}, "relative": {"comparisons": []}})
+    model = build_model({"units": [], "run": {}, "relative": {"comparisons": []}}, lang=LANG_ZH)
     block = model["dimensions"]["semantics"]
 
     assert block["status"] == "not_probed"

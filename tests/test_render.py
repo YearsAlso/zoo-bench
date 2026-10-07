@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from zoo_bench import cli, storage
+from zoo_bench.i18n import LANG_ZH, t
 from zoo_bench.render import charts
 from zoo_bench.render import markdown as markdown_renderer
 from zoo_bench.render.fonts import CjkFontUnavailable, find_cjk_font, font_covers
@@ -41,7 +42,9 @@ def _summary(value: float) -> dict[str, float | int]:
     }
 
 
-def _overhead_row(adapter: str, tier: float, ratio: float, *, concurrency: int = 4) -> dict[str, Any]:
+def _overhead_row(
+    adapter: str, tier: float, ratio: float, *, concurrency: int = 4
+) -> dict[str, Any]:
     return {
         "adapter": adapter,
         "concurrency": concurrency,
@@ -65,12 +68,17 @@ def _model(*, overhead_ratio: float = 0.26) -> dict[str, Any]:
     """一个够渲染的最小模型。只带渲染层要读的字段。"""
     return {
         "schema": "test",
+        "lang": LANG_ZH,
         "source": {"path": "results/x.json"},
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
             "os": {"system": "TestOS", "release": "1", "version": "1.0"},
             "python": {"version": "3.13.0", "implementation": "CPython", "executable": "/py"},
-            "subject": {"dist_version": "9.9.9", "module_version": "1.0", "note": "以发行元数据为准"},
+            "subject": {
+                "dist_version": "9.9.9",
+                "module_version": "1.0",
+                "note": "以发行元数据为准",
+            },
             "harness": {"version": "0.0.1", "commit": "deadbeef"},
             "command": ["zoo-bench", "run"],
         },
@@ -182,7 +190,7 @@ def test_report_declares_the_semantics_scope_even_when_unmeasured() -> None:
 
 def test_report_labels_absolute_durations_as_not_comparable() -> None:
     text = markdown_renderer.render_markdown(_model(), [])
-    assert ABSOLUTE_NOTE in text
+    assert t(ABSOLUTE_NOTE, LANG_ZH) in text
 
 
 def test_report_renders_environment_unavailable_reason() -> None:
@@ -231,9 +239,7 @@ def test_charts_render_without_missing_glyphs(tmp_path: Path) -> None:
         warnings.simplefilter("always")
         rendered = charts.render_all(_model(), tmp_path / "figures", threshold=0.15)
 
-    missing = [
-        str(item.message) for item in caught if "missing from font" in str(item.message)
-    ]
+    missing = [str(item.message) for item in caught if "missing from font" in str(item.message)]
     assert not missing, f"图表里出现缺字（会显示为方框）：{missing[:3]}"
     assert {chart["figure"] for chart in rendered} == {"overhead_ratio", "throughput"}
 
@@ -293,11 +299,18 @@ def _subject_stub_unit() -> dict[str, Any]:
             "tier": "under_test",
             "comparable": True,
             "notes": "",
-            "drive_level": "调度派发层",
+            # 空串而不是中文自述：这份桩档案会被**两种语言**各渲染一遍，英文产物走字符白名单，
+            # 中文自述（真实档案里是适配器的 drive_level）会让英文导出失败。自述的键化是
+            # support-framework-generations 之后的事（spec 6.1/6.2），此处取语言中立值。
+            "drive_level": "",
         },
         "absolute": {
-            "end_to_end_per_task_seconds": {"median": 0.0003, "p95": 0.0003, "p99": 0.0003,
-                                            "relative_spread": 0.0},
+            "end_to_end_per_task_seconds": {
+                "median": 0.0003,
+                "p95": 0.0003,
+                "p99": 0.0003,
+                "relative_spread": 0.0,
+            },
             "body_seconds": {"median": 0.0002},
             "framework_overhead_seconds": 0.0001,
             "framework_overhead_ratio": 0.33,
@@ -368,7 +381,10 @@ def test_unfavorable_exemption_is_recorded_in_the_report(tmp_path: Path) -> None
         ]
     )
     assert code == 0, "显式豁免后应当出报告"
-    report = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
+    # 英文在站点根、中文在 zh/ 子目录（design D3）；豁免注两种语言各一份，故两边都要钉
+    english = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
+    assert "publication exemption" in english
+    report = (tmp_path / "site" / "zh" / "report.md").read_text(encoding="utf-8")
     assert "发布豁免" in report
     assert "审计线索" in report
 
@@ -388,11 +404,20 @@ def test_render_refuses_when_the_subject_is_missing(tmp_path: Path) -> None:
                 {
                     "spec": {"adapter": "bare_thread", "concurrency": 1, "body_tier_us": 300.0},
                     "status": "ok",
-                    "adapter": {"name": "bare_thread", "tier": "bare", "comparable": True,
-                                "notes": "", "drive_level": ""},
+                    "adapter": {
+                        "name": "bare_thread",
+                        "tier": "bare",
+                        "comparable": True,
+                        "notes": "",
+                        "drive_level": "",
+                    },
                     "absolute": {
-                        "end_to_end_per_task_seconds": {"median": 0.0002, "p95": 0.0002,
-                                                        "p99": 0.0002, "relative_spread": 0.0},
+                        "end_to_end_per_task_seconds": {
+                            "median": 0.0002,
+                            "p95": 0.0002,
+                            "p99": 0.0002,
+                            "relative_spread": 0.0,
+                        },
                         "body_seconds": {"median": 0.0002},
                         "framework_overhead_seconds": 0.0,
                         "framework_overhead_ratio": 0.0,
@@ -409,7 +434,15 @@ def test_render_refuses_when_the_subject_is_missing(tmp_path: Path) -> None:
     )
 
     code = cli.main(
-        ["render", "--framework", "9.9.9", "--results", str(results), "--out", str(tmp_path / "site")]
+        [
+            "render",
+            "--framework",
+            "9.9.9",
+            "--results",
+            str(results),
+            "--out",
+            str(tmp_path / "site"),
+        ]
     )
     assert code == 6
     assert not (tmp_path / "site" / "index.html").exists()
@@ -417,7 +450,9 @@ def test_render_refuses_when_the_subject_is_missing(tmp_path: Path) -> None:
 
 def test_render_reports_which_versions_are_archived(tmp_path: Path) -> None:
     """没给 --data 也没给 --framework 时，要告诉用户已留档了什么，而不是只说"需要参数"。"""
-    code = cli.main(["render", "--results", str(tmp_path / "empty"), "--out", str(tmp_path / "site")])
+    code = cli.main(
+        ["render", "--results", str(tmp_path / "empty"), "--out", str(tmp_path / "site")]
+    )
     assert code == 2
 
 
@@ -530,7 +565,9 @@ def test_attribution_section_renders_segments_and_the_conclusion() -> None:
                 ],
             }
         ],
-        "summary": ["并发度 1、执行体 300 微秒 下，被测框架相对 thread_pool 每任务多花 60 微秒，其中主要落在「提交侧」（+60 微秒）。"],
+        "summary": [
+            "并发度 1、执行体 300 微秒 下，被测框架相对 thread_pool 每任务多花 60 微秒，其中主要落在「提交侧」（+60 微秒）。"
+        ],
         "reason": "",
     }
 
@@ -546,7 +583,7 @@ def test_attribution_section_renders_segments_and_the_conclusion() -> None:
     # 导出前门禁：这张表里的每个字符中文字体都得有
     from zoo_bench.render.blocks import assert_report_text_is_renderable
 
-    assert_report_text_is_renderable(text)
+    assert_report_text_is_renderable(text, lang=LANG_ZH)
 
 
 def test_a_model_without_the_attribution_key_still_renders() -> None:
@@ -657,7 +694,7 @@ def test_advantage_section_mirrors_the_unfavorable_one() -> None:
 
 
 def test_advantage_section_says_so_when_there_is_nothing_to_show() -> None:
-    """"本节为空"也要看得见——不能因为节里没内容就把整个章节省掉。"""
+    """ "本节为空"也要看得见——不能因为节里没内容就把整个章节省掉。"""
     model = _model()
     model["favorable"] = {"items": [], "note": "同源", "found": False}
 
@@ -699,9 +736,19 @@ def test_body_shows_pivots_and_the_appendix_keeps_every_field() -> None:
     body = text[: text.index("## 附录：全部数值")]
     appendix = text[text.index("## 附录：全部数值") :]
 
-    assert "| 并发度 | 执行体档位（微秒） |" in body, "正文应是透视表（行 = 并发度与档位、列 = 方案）"
+    assert "| 并发度 | 执行体档位（微秒） |" in body, (
+        "正文应是透视表（行 = 并发度与档位、列 = 方案）"
+    )
     assert _APPENDIX_POINTER_TEXT in body, "正文要指向附录，读者不必找"
-    for field_header in ("中位数", "p95", "p99", "相对离散度", "执行体实测", "框架开销", "开销占比"):
+    for field_header in (
+        "中位数",
+        "p95",
+        "p99",
+        "相对离散度",
+        "执行体实测",
+        "框架开销",
+        "开销占比",
+    ):
         assert field_header in appendix, f"附录里少了字段：{field_header}"
 
 
@@ -741,7 +788,13 @@ def test_tie_section_states_the_band_and_its_definition() -> None:
 def test_tie_section_says_so_when_every_tier_is_decidable() -> None:
     """每一档都分得出胜负时说清这一点——空节与"没测"必须分得开。"""
     model = _model()
-    model["tied"] = {"items": [], "note": "说明", "found": False, "band_min": None, "band_max": None}
+    model["tied"] = {
+        "items": [],
+        "note": "说明",
+        "found": False,
+        "band_min": None,
+        "band_max": None,
+    }
 
     text = markdown_renderer.render_markdown(model, [])
 
@@ -819,7 +872,10 @@ def test_render_publishes_when_the_only_losing_evidence_is_a_tie(tmp_path: Path)
     )
 
     assert code == 0, "处处打平时不利集为空，门禁若据此拒发就是误伤"
-    report = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
+    english = (tmp_path / "site" / "report.md").read_text(encoding="utf-8")
+    assert "tiers with no winner" in english
+    assert "less than the band" in english, "平手要给出来由，读者才知道这不是漏测"
+    report = (tmp_path / "site" / "zh" / "report.md").read_text(encoding="utf-8")
     assert "分不出胜负的档位" in report
     assert "小于带宽" in report, "平手要给出来由，读者才知道这不是漏测"
 

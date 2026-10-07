@@ -24,10 +24,7 @@ class AsyncioPoolAdapter(BaseAdapter):
 
     name = "asyncio_pool"
     tier = Tier.STDLIB
-    notes = (
-        "asyncio 事件循环调度**同步**执行体（等价于 loop.run_in_executor），非原生协程并发；"
-        "与线程池的差别是事件循环自身开销"
-    )
+    notes = "adapters.notes.asyncio_pool"
 
     def setup(self, *, workers: int) -> None:
         self._loop = asyncio.new_event_loop()
