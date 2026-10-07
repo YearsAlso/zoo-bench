@@ -7,7 +7,7 @@
 > **The maintained performance evidence for [Zoo Framework](https://github.com/YearsAlso/zoo-framework).**
 > Zoo Framework 的**维护中**性能证据 —— 每个版本重新测量、公开原始数据、并如实列出本框架输掉的档位。
 
-**📊 Live report / 线上报告：<https://yearsalso.github.io/zoo-bench/>**
+**📊 Live report / 线上报告：<https://yearsalso.github.io/zoo-bench/> (English) · [中文](https://yearsalso.github.io/zoo-bench/zh/)**
 
 ---
 
@@ -58,6 +58,9 @@ back to one generation's path and measures something the framework does not actu
   The deck's prose comes from the same block list as the other two and its bars from the same report
   model, so the three cannot disagree — and the deck **keeps an explicit slide for the tiers where
   this framework loses**, paginated in full rather than truncated to fit.
+- **The site is bilingual**: English at the root, Chinese under `zh/`, each page linking to the
+  other in its header. Report, index and comparison pages all exist in both, with figures and PDF
+  rendered per language — the two come from the same run, so the numbers cannot disagree either.
 - **The raw data is public**: `results/<framework-version>/<timestamp>.json` in this repository,
   containing **per-round samples** (not just aggregates), so the aggregation itself can be audited.
 - **Where the overhead goes** is itself a report dimension: per-task end-to-end split into four
@@ -81,9 +84,10 @@ zoo-bench compare 0.6.0 0.7.1b0 --out site/compare
 - **`matrix.yaml` is the single source of truth** for which framework versions, adapters,
   concurrency levels and body tiers are measured. Omitting the `adapters` key means *every
   registered adapter* — so the framework under test cannot be forgotten.
-- **CJK fonts are required.** Charts need any CJK font; **the PDF needs a TrueType-outline one**.
-  `fonts-noto-cjk` is CFF-outline and **reportlab cannot embed it** — install `fonts-wqy-zenhei` too
-  (CI does). A missing font fails loudly rather than producing a report full of boxes.
+- **CJK fonts are required for the Chinese products only.** Charts need any CJK font; **the PDF
+  needs a TrueType-outline one**. `fonts-noto-cjk` is CFF-outline and **reportlab cannot embed it** —
+  install `fonts-wqy-zenhei` too (CI does). A missing font fails loudly rather than producing a
+  report full of boxes; the English products use matplotlib's built-ins and never look for one.
 
 ### Add your own comparison
 
@@ -181,6 +185,8 @@ openspec/changes/archive/   the change that built this: proposal / design D1–D
   Markdown 是可 diff 的全文，PDF 是可分发的文档。deck 的文字与另两份出自同一份块列表、条形出自
   同一份报告模型，故三者不可能互相矛盾——且 deck **必有一页列出本框架输掉的档位**，分页续排到
   底而不是为版面截断。
+- **站点是双语的**：英文在根路径、中文在 `zh/` 子目录，每页页头互链。报告页、首页、对比页两种
+  语言各一份，图表与 PDF 也按语言各出一份——两份出自同一次运行，数字同样不可能对不上。
 - **原始数据是公开的**：本仓库的 `results/<框架版本>/<时间戳>.json`，含**逐轮原始样本**
   （不只是聚合值），所以聚合本身也可以被审计。
 - **开销花在哪**本身就是报告里的一个维度：每任务端到端拆成四段，并与各对照方案**逐段对照**。
@@ -201,9 +207,10 @@ zoo-bench compare 0.6.0 0.7.1b0 --out site/compare
 
 - **`matrix.yaml` 是唯一真源**：测哪些框架版本、哪些适配器、哪些并发度与执行体档位，都写在
   那里。**省略 `adapters` 键即"全部已登记适配器"**——被测对象因此不可能被漏掉。
-- **需要中文字体。** 图表用任何中文字体即可；**PDF 另需 TrueType 轮廓的字体**。
+- **中文产物需要中文字体。** 图表用任何中文字体即可；**PDF 另需 TrueType 轮廓的字体**。
   `fonts-noto-cjk` 是 CFF 轮廓、**reportlab 不能嵌**——要一并装 `fonts-wqy-zenhei`（CI 就是
-  这么做的）。缺字体时会明确失败，而不是产出一份满是方框的报告。
+  这么做的）。缺字体时会明确失败，而不是产出一份满是方框的报告；英文产物用 matplotlib 内置
+  字体，不会去找中文字体。
 
 ### 加入你自己的对照
 
