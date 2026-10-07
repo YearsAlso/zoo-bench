@@ -118,17 +118,35 @@ _EXTRA_CSS = """
     .slide.active.deck-anim > *:nth-child(4) { animation-delay: 120ms; }
     .slide.active.deck-anim > *:nth-child(n + 5) { animation-delay: 280ms; }
 
-    /* 打印与「减少动态效果」都必须**显式**把动画关掉：前者否则会抓到 opacity:0（那一页打出来
-       是空白），后者是无障碍要求。两条都不能指望"动画自己会跑完"。 */
+    /* ── 条形从零增长（图表页）──────────────
+       用 scaleX 而不是动画 width：后者的目标是 `calc(var(--v) / var(--max) * 100%)`，要么在 JS
+       里读计算值、要么把那条 calc 复制一份（两处真源迟早漂移）；scaleX 不需要那个值、也不触发
+       逐帧布局。视觉上实心矩形横向缩放与"宽度增长"等价。**静止态不是缩放态**，故禁用 JavaScript
+       时条形直接是终值，不经历零。 */
+    @keyframes deck-bar-grow {
+      from { transform: scaleX(0); }
+      to   { transform: scaleX(1); }
+    }
+    .slide.active.deck-anim .bar {
+      transform-origin: left center;
+      animation: deck-bar-grow 520ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+      animation-delay: var(--deck-bar-delay, 0ms);
+    }
+
+    /* 打印与「减少动态效果」都必须**显式**把动画关掉：前者否则会抓到初始态（opacity:0 是空白、
+       scaleX(0) 是零长条形），后者是无障碍要求。两条都不能指望"动画自己会跑完"。
+       **选择器要同时管到孙子层**：`.slide > *` 只覆盖直接子元素，条形在 `.chart` 里面，不在其中。 */
     @media print {
-      .slide > * { animation: none !important; opacity: 1 !important; transform: none !important; }
+      .slide > *, .slide .bar {
+        animation: none !important; opacity: 1 !important; transform: none !important;
+      }
       /* **这条是必需的，不是冗余**：屏幕规则 `.slide:not(.active) { display: none !important }`
          比框架打印规则里的 `.slide { display: flex !important }` **更具体**，于是把后者压掉——
          实测打印一趟 38 页的 deck 只出 1 页（当前页）。同具体度、并排在它之后即可胜出。 */
       .slide:not(.active) { display: flex !important; }
     }
     @media (prefers-reduced-motion: reduce) {
-      .slide > * { animation: none !important; }
+      .slide > *, .slide .bar { animation: none !important; }
     }
 """
 
@@ -165,6 +183,46 @@ _EXTRA_JS = """
       var reduce = window.matchMedia
         && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+      var counting = null;   // 正在滚动的大数字：{node, original}
+
+      // 大数字滚动。**收尾必须逐字写回原值**：这是报告，停在中间值等于报了一个错数；而用
+      // `toFixed` 重新格式化也不行——那会把 `4.7` 悄悄改成 `4.70`，与渲染时不再一字不差。
+      function countUp(root) {
+        var element = root.querySelector('.stat-num');
+        if (!element || !element.firstChild || element.firstChild.nodeType !== 3) return;
+        var node = element.firstChild;
+        var original = node.nodeValue;
+        var target = parseFloat(original);
+        if (!isFinite(target)) return;
+        var decimals = (original.split('.')[1] || '').length;
+        var startedAt = null;
+        counting = { node: node, original: original };
+        var frame = function (now) {
+          if (startedAt === null) startedAt = now;
+          var progress = Math.min(1, (now - startedAt) / 700);
+          var eased = 1 - Math.pow(1 - progress, 3);
+          node.nodeValue = (target * eased).toFixed(decimals);
+          if (progress < 1) { window.requestAnimationFrame(frame); return; }
+          node.nodeValue = original;   // ← 逐字写回，不靠 toFixed 还原
+          counting = null;
+        };
+        window.requestAnimationFrame(frame);
+      }
+
+      // 打印恰好发生在滚动途中时**强制收尾**，否则印出来的是中间值
+      window.addEventListener('beforeprint', function () {
+        if (!counting) return;
+        counting.node.nodeValue = counting.original;
+        counting = null;
+      });
+
+      // 条形按行错开：给每一行写一个延迟变量，样式侧读 var(--deck-bar-delay, 0ms)
+      function staggerBars(root) {
+        var rows = root.querySelectorAll('.chart .bar-row');
+        for (var index = 0; index < rows.length; index++) {
+          rows[index].style.setProperty('--deck-bar-delay', (index * 60) + 'ms');
+        }
+      }
 
       window.addEventListener('message', function (event) {
         var data = event && event.data;
@@ -172,10 +230,12 @@ _EXTRA_JS = """
         if (reduce) return;   // 声明减少动态效果：CSS 那层之外再加一道
         var slide = slides[data.active];
         if (!slide) return;
+        staggerBars(slide);
         // 先移除、强制重排、再加：重复加同一个类不会重启动画，回到看过的页就不播了
         slide.classList.remove('deck-anim');
         void slide.offsetWidth;
         slide.classList.add('deck-anim');
+        countUp(slide);
       });
     })();
 """

@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: deck MUST 支持滚轮翻页，且入场动画 MUST 可被读者与打印绕开
+### Requirement: deck MUST 支持滚轮翻页，且动画 MUST 可被读者与打印绕开，数值 MUST 收尾为真值
 
-报告的 deck SHALL 支持用**滚轮**翻页（与既有的点击、方向键并列），并 MUST 对连续的同向滚动做收敛（阈值 + 冷却），使触控板的一次惯性手势不会跳过多页。deck 的每页元素 MAY 按序入场（淡入），但动画 MUST 满足三条：读者声明 `prefers-reduced-motion: reduce` 时 MUST NOT 播放；打印与 PDF 导出时 MUST NOT 留下动画的初始态（否则那一页是空白）；**动画 MUST NOT 成为内容的前提**——未启用 JavaScript 的读者看到的必须是完整内容。打印与 PDF 导出 MUST 输出**全部页**，MUST NOT 只输出当前所在的那一页。
+报告的 deck SHALL 支持用**滚轮**翻页（与既有的点击、方向键并列），并 MUST 对连续的同向滚动做收敛（阈值 + 冷却），使触控板的一次惯性手势不会跳过多页。deck 的每页元素 MAY 按序入场（淡入），数值类元素 MAY 带增长动画（大数字滚动、条形从零增长），但动画 MUST 满足四条：读者声明 `prefers-reduced-motion: reduce` 时 MUST NOT 播放；打印与 PDF 导出时 MUST NOT 留下动画的初始态（否则那一页是空白）；**动画 MUST NOT 成为内容的前提**——未启用 JavaScript 的读者看到的必须是完整内容；**改动数值的动画 MUST 收尾为渲染时的原值**，且打印时（含打印发生在动画途中）页面上 MUST 是真值——MUST NOT 停在中间值。打印与 PDF 导出 MUST 输出**全部页**，MUST NOT 只输出当前所在的那一页。
 
 #### Scenario: 滚轮翻页
 - **WHEN** 在报告页上滚动滚轮
@@ -23,6 +23,22 @@
 #### Scenario: 打印输出全部页
 - **WHEN** 打印一份多页 deck
 - **THEN** 每一页都在输出里，而不是只有当前所在的那一页
+
+#### Scenario: 条形从零增长
+- **WHEN** 翻到含条形图的页
+- **THEN** 条形从零增长到它该有的长度（**未启用 JavaScript 时直接就是终值**，不经历零）
+
+#### Scenario: 大数字滚动收尾为原值
+- **WHEN** 大数字的滚动动画结束
+- **THEN** 页面上的数字**逐字**等于渲染时的原值（不是 `toFixed` 重新格式化的结果，也不是中间值）
+
+#### Scenario: 数值在打印与减少动态效果下就是真值
+- **WHEN** 打印（含打印恰好发生在滚动途中），或读者声明 `prefers-reduced-motion: reduce`
+- **THEN** 页面上呈现的是真值，不出现中间值
+
+#### Scenario: 未启用 JavaScript 时数值就是真值
+- **WHEN** 读者禁用了 JavaScript
+- **THEN** 大数字直接显示渲染时的原值、条形直接是终值——数值从不由动画产生
 
 #### Scenario: 无 JavaScript 时内容仍完整
 - **WHEN** 读者禁用了 JavaScript

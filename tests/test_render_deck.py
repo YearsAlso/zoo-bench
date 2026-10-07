@@ -43,6 +43,7 @@ def _asset_digest(path: Path) -> str:
     """
     return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
 
+
 #: 真实 slide 才带 ``data-screen-label``——框架 CSS 的注释里也含 ``<section class="slide">``
 #: 这段字面量，只按标签切会从注释切起。
 _SLIDE = re.compile(
@@ -153,7 +154,9 @@ def _model(
 
     return {
         # 真实留档路径来自 CLI，是**绝对路径**（本机 `F:\...`、CI `/home/runner/...`）
-        "source": {"path": r"F:\Python\zoo\zoo-bench\results\zoo-framework-9.9.9\20260101T000000Z.json"},
+        "source": {
+            "path": r"F:\Python\zoo\zoo-bench\results\zoo-framework-9.9.9\20260101T000000Z.json"
+        },
         "subject": "zoo",
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
@@ -493,9 +496,59 @@ def test_print_and_reduced_motion_explicitly_turn_the_animation_off() -> None:
     """
     page = _deck(_model())
 
-    assert ".slide > * { animation: none !important; opacity: 1 !important; transform: none !important; }" in page
+    assert "animation: none !important; opacity: 1 !important; transform: none !important;" in page
     assert "@media (prefers-reduced-motion: reduce)" in page
-    assert ".slide > * { animation: none !important; }" in page
+    assert ".slide > *, .slide .bar { animation: none !important; }" in page
+    # **孙子层也要管到**：条形在 .chart 里面，`.slide > *` 覆盖不到它——只写直接子元素的话，
+    # 打印会抓到 scaleX(0)（零长条形），reduced-motion 下条形也会从零长起来。
+    assert page.count(".slide > *, .slide .bar {") == 2, (
+        "打印与 reduced-motion 两条都要含 .slide .bar"
+    )
+
+
+def test_bars_grow_from_zero_only_when_javascript_runs() -> None:
+    """条形增长必须是"JS 在时才播"的动画，静止态就是终值。
+
+    用 `scaleX` 而不是动画 `width`：后者的目标是 `calc(var(--v) / var(--max) * 100%)`，得在 JS 里
+    读计算值或把那条 calc 复制一份。故断言 `scaleX(` **只出现在关键帧里**——出现在别处的规则里就
+    意味着元素有了一个"静止时也是缩小"的状态，禁用 JavaScript 的读者会看到零长条形。
+    """
+    page = _deck(_model())
+
+    assert "@keyframes deck-bar-grow" in page
+    assert ".slide.active.deck-anim .bar {" in page
+    assert "transform-origin: left center" in page
+    assert "--deck-bar-delay" in page, "条形要按行错开，延时变量得在场"
+    # **按规则查，不按子串**：注释里也会出现 `scaleX(`，按子串计数会被注释骗（实测被自己的注释
+    # 骗过一次）。`_css_rules` 已排除关键帧的 from/to，故这里只要出现就等于"静止时也是缩放态"。
+    assert not [
+        selector for selector, declarations in _css_rules(page) if "scaleX(" in declarations
+    ], "缩放只能写在关键帧里，否则禁用 JavaScript 时条形是零长的"
+
+
+def _lines_starting_with(page: str, prefix: str) -> list[str]:
+    """页面里以某段代码**开头的行**（去掉缩进后比对）。
+
+    **不按子串查**：子串会被"包一层"绕过——实测把处理器前面加上 `if (false)`，子串照样在场，
+    断言照过。查行首则要求那一步是它自己的一行、没有被套进任何条件里。
+    """
+    return [line.strip() for line in page.splitlines() if line.strip().startswith(prefix)]
+
+
+def test_numeric_animation_never_invents_a_number() -> None:
+    """大数字的滚动**不得**成为数值的来源。
+
+    三条一起成立才算数：① 渲染出来的 DOM 里就是原值（禁用 JavaScript 的读者看到的就是真值）；
+    ② 滚动收尾把 `nodeValue` **逐字**写回捕获到的原值（不是重新 `toFixed`——那会把 `4.7` 改成
+    `4.70`）；③ 打印恰好发生在滚动途中时有 `beforeprint` 强制收尾，否则印出来的是中间值。
+    """
+    page = _deck(_model())
+
+    assert '<div class="stat-num">1.57<span class="unit">%</span></div>' in page, "DOM 里就该是真值"
+    assert _lines_starting_with(page, "node.nodeValue = original"), "收尾必须逐字写回原值"
+    assert _lines_starting_with(page, "window.addEventListener('beforeprint'"), (
+        "打印途中要强制收尾——而且必须是无条件的，不能被套进任何判断里"
+    )
 
 
 def test_wheel_debounce_parameters_are_pinned() -> None:
