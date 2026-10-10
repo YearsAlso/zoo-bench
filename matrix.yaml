@@ -47,6 +47,12 @@ frameworks:
   # （**能力探测判定，不看版本号**），适配器无需改动。本版是 BREAKING 发布——运行依赖移除
   # gevent、删除 `event:sleep` 死键——但改动落在事件管道内部，未触及适配器驱动的派发面
   - "zoo-framework==0.10.0"
+  # 0.11.0 经全套用例通过后加入（351 passed，含 31 条适配器契约）；驱动面与 0.7.x–0.10.0 同代
+  # （**能力探测判定，不看版本号**），适配器无需改动。本版两项新能力**默认都不参与**测量：
+  # 自适应调度（`adaptive:enabled` 默认 false）与原生任务执行（`native:enabled` 默认 false，
+  # Rust 扩展为可选依赖、不随主包分发，缺席时既有功能不受影响）；其余改动落在派发内核
+  # （waiter / scheduler_model）、事件管道与 FIFO / Reactor 内部，未触及适配器驱动的派发面
+  - "zoo-framework==0.11.0"
   # dev 放在最后：**相邻配对决定对比页的配对**——这样生成的是「发布版→发布版」与
   # 「最新发布→开发中」，而不是把开发中的东西夹在两个发布版之间
   - "zoo-framework @ git+https://github.com/YearsAlso/zoo-framework.git@dev"
