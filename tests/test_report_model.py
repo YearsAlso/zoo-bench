@@ -548,9 +548,15 @@ def test_every_dimension_is_present_even_when_its_probe_did_not_run() -> None:
         "throughput",
         "semantics",
         "attribution",
+        "native_line",
     }
     assert model["dimensions"]["attribution"]["status"] == "not_probed"
     assert model["dimensions"]["attribution"]["reason"], "未探查要说明为什么"
+    # 原生任务线在留档里没有这个键时同样给占位：它比别的维度多一态（"这次运行没有这条线"与
+    # "这个版本不具备该能力"不是同一个事实），故占位状态名与其余维度不同、理由也要在场
+    assert model["dimensions"]["native_line"]["status"] == "not_in_run"
+    assert model["dimensions"]["native_line"]["reason"], "没这条线也要说明是哪种'没有'"
+    assert model["dimensions"]["native_line"]["rows"] == []
 
 
 def test_subject_is_identified_by_tier_not_by_name() -> None:

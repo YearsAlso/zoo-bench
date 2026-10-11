@@ -35,6 +35,7 @@ from .runner import (
     DEFAULT_MEASURED_ROUNDS,
     DEFAULT_WARMUP_ROUNDS,
     measure_matrix,
+    summarize_native_line,
     summarize_self_check,
 )
 
@@ -155,7 +156,7 @@ def run_command(args: argparse.Namespace) -> int:
     )
     print(f"测量 {len(specs)} 个单元（{framework}）…")
 
-    result = measure_matrix(specs)
+    result = measure_matrix(specs, native_line=matrix_module.native_line_plan(matrix))
     result["environment"] = environment.collect(command=recorded_command())
 
     path = storage.save_run(result, framework=framework, root=args.out)
@@ -165,6 +166,10 @@ def run_command(args: argparse.Namespace) -> int:
     print(f"自检：{'通过' if passed else '未通过'}")
     for problem in summarize_self_check(result["self_check"]):
         print(f"  - {problem}")
+    # 该线不进自检（理由见 :func:`summarize_native_line`），故它的告警必须另有出口——
+    # 不出声的失败与"该线没开"在日志里看不出区别，那正是这条告警要防的
+    for warning in summarize_native_line(result):
+        print(f"  - {warning}")
     return 0
 
 

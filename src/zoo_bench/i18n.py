@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import string
+from collections.abc import Mapping
 from typing import Any
 
 LANG_EN = "en"
@@ -389,6 +390,17 @@ MESSAGES: dict[str, dict[str, str]] = {
         "颗粒度支配）。原始值仍在场，但那两处的墙钟不足以断定校准是否正确——"
         "**读这些档位的数字时要把它算进去**",
     },
+    "report.caveat.native_line.kind": {
+        LANG_EN: "native task line: no verdict",
+        LANG_ZH: "原生任务线：未出结论",
+    },
+    "report.caveat.native_line.text": {
+        LANG_EN: "the native task line came out {status} ({reason}) and produced no figures. It "
+        "is reported here rather than folded into the self-check: one line's failure must not "
+        "hold back the other versions' data or the main matrix",
+        LANG_ZH: "原生任务线结论为 {status}（{reason}）、未产出任何数字。它记在这里而不是并入"
+        "自检：一条线的失败不得拖住其余版本的数据与主矩阵",
+    },
     # 度量维度的标题 / 单位 / 口径注
     "report.dimension.latency.title": {
         LANG_EN: "Latency percentiles and jitter",
@@ -416,6 +428,56 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_EN: "throughput = concurrency / median end-to-end; whether it keeps rising with "
         "concurrency is the scaling behaviour",
         LANG_ZH: "吞吐 = 并发度 / 端到端中位数；随并发度是否继续上升即为伸缩性",
+    },
+    "report.native_line.title": {
+        LANG_EN: "Native task line: three execution forms of the same subject",
+        LANG_ZH: "原生任务线：同一被测对象的三种执行形态",
+    },
+    "report.native_line.not_in_run": {
+        LANG_EN: "this run carries no native task line (the matrix declares none, or the run "
+        "predates this dimension) - not measured, not 'measured as absent'",
+        LANG_ZH: "本次运行没有原生任务线（矩阵未声明该线，或该留档早于这个维度）——是未测量，"
+        "不是「测得不存在」",
+    },
+    "report.native_line.gate_ok": {
+        LANG_EN: "equivalence gate: passed, {checked} inputs compared byte for byte against the "
+        "Python reference (envelope {envelope} bytes)",
+        LANG_ZH: "等价性门禁：通过，{checked} 条判据输入与 Python 参照逐字节比对（输入上限 "
+        "{envelope} 字节）",
+    },
+    "report.native_line.gate_failed": {
+        LANG_EN: "equivalence gate: FAILED, {count} input(s) differ from the reference - the "
+        "native extension's output is not this line's premise, so none of its figures are used",
+        LANG_ZH: "等价性门禁：未通过，{count} 条判据输入与参照不等价——原生扩展的输出不成立为该线"
+        "的前提，故它的数字一条也不用",
+    },
+    "report.native_line.gate_absent": {
+        LANG_EN: "equivalence gate: not run (the probe did not reach it)",
+        LANG_ZH: "等价性门禁：未跑到（前置探查没走到这一步）",
+    },
+    # 原生任务线的三种执行形态名。**同一形态在本维度内只有这一个名字**：报告正文、表格表头与
+    # 图例都取它，免得三处各叫一个样而读者以为是三样东西
+    "native_line.form.pure": {
+        LANG_EN: "pure Python",
+        LANG_ZH: "纯解释",
+    },
+    "native_line.form.native": {
+        LANG_EN: "native extension",
+        LANG_ZH: "原生扩展",
+    },
+    "native_line.form.routed": {
+        LANG_EN: "online routing",
+        LANG_ZH: "在线路由",
+    },
+    # 路由形态内部的两**臂**名。臂与形态**不是同一套词表**（纯解释形态 ↔ 解释臂），故分开取词：
+    # 混用会让"路由到的那一臂"与"划算的那一形态"在读者眼里变成同一件事
+    "native_line.arm.native": {
+        LANG_EN: "native arm",
+        LANG_ZH: "原生臂",
+    },
+    "native_line.arm.python": {
+        LANG_EN: "python arm",
+        LANG_ZH: "解释臂",
     },
     # 归因的四段名与提交侧细分桶名
     "report.attribution.segment.submit_side": {LANG_EN: "submit side", LANG_ZH: "提交侧"},
@@ -692,6 +754,7 @@ MESSAGES: dict[str, dict[str, str]] = {
     "blocks.header.scheme": {LANG_EN: "scheme", LANG_ZH: "方案"},
     "blocks.header.baseline": {LANG_EN: "baseline", LANG_ZH: "对照方案"},
     "blocks.header.concurrency": {LANG_EN: "concurrency", LANG_ZH: "并发度"},
+    "blocks.header.frame_bytes": {LANG_EN: "frame bytes", LANG_ZH: "帧字节"},
     "blocks.header.threshold": {LANG_EN: "threshold", LANG_ZH: "阈值"},
     "blocks.header.note": {LANG_EN: "note", LANG_ZH: "说明"},
     "blocks.header.status": {LANG_EN: "status", LANG_ZH: "状态"},
@@ -854,6 +917,119 @@ MESSAGES: dict[str, dict[str, str]] = {
     "blocks.attribution.drill_item": {
         LANG_EN: "concurrency {concurrency}, tier {tier:g} microseconds: {parts}",
         LANG_ZH: "并发度 {concurrency}、档位 {tier:g} 微秒：{parts}",
+    },
+    # ── 原生任务线维度 ───────────────────────────────────────────────────
+    "blocks.native_line.status": {
+        LANG_EN: "**verdict: {status}**",
+        LANG_ZH: "**该线结论：{status}**",
+    },
+    "blocks.native_line.plan": {
+        LANG_EN: "tiers {tiers} (frame bytes {frames}); concurrencies {concurrencies}; each cell "
+        "runs {warmup} warm-up plus {measured} measured rounds, one child process per concurrency "
+        "({children} in all)",
+        LANG_ZH: "规模档位 {tiers}（帧字节 {frames}）；并发度 {concurrencies}；每格预热 {warmup} 轮 + "
+        "采样 {measured} 轮，每个并发度一个子进程（共 {children} 个）",
+    },
+    "blocks.native_line.task": {
+        LANG_EN: "loaded task {task} - Modbus RTU response-frame parsing: the input is a bare RTU "
+        "ADU response frame (no transport framing), and the tier's frame bytes are its length",
+        LANG_ZH: "所测任务 {task}——Modbus RTU 响应帧解析：输入是一条裸 RTU ADU 响应帧（不含任何传输层"
+        "封装），其长度即该档位的帧字节",
+    },
+    "blocks.native_line.caliber": {
+        LANG_EN: "each figure is end-to-end per task (median of the measured rounds) - the same "
+        "caliber as the main matrix's latency dimension",
+        LANG_ZH: "每个数值是每任务端到端（正式采样轮的中位数）——与主矩阵延迟维度同一口径",
+    },
+    "blocks.native_line.notes": {
+        LANG_EN: "caliber statements for this dimension:",
+        LANG_ZH: "本维度的口径声明：",
+    },
+    "blocks.native_line.header_input": {LANG_EN: "input", LANG_ZH: "判据输入"},
+    "blocks.native_line.header_group": {LANG_EN: "group", LANG_ZH: "分组"},
+    "blocks.native_line.header_frame": {LANG_EN: "frame (hex)", LANG_ZH: "帧（十六进制）"},
+    "blocks.native_line.header_ratio": {
+        LANG_EN: "{form} / pure Python",
+        LANG_ZH: "{form} / 纯解释",
+    },
+    "blocks.native_line.header_faster": {LANG_EN: "faster form", LANG_ZH: "更快的一方"},
+    "blocks.native_line.undecided": {LANG_EN: "undecided", LANG_ZH: "未决"},
+    "blocks.native_line.gate_detail": {
+        LANG_EN: "these inputs came out differently on the two sides; the full frames and both "
+        "sides' texts are in the archived raw data",
+        LANG_ZH: "这些输入在两臂上的结果不同；完整帧与两侧的原文在该次留档的原始数据里",
+    },
+    "blocks.native_line.frame_truncated": {
+        LANG_EN: "{head} ... ({total} hex characters in all)",
+        LANG_ZH: "{head} ...（十六进制共 {total} 字符）",
+    },
+    "blocks.native_line.closed_forms": {
+        LANG_EN: "{forms}: no figures ({reason})",
+        LANG_ZH: "{forms}：不给数字（{reason}）",
+    },
+    # 规模分界结论。三向都写出来：只写"更快"会把不利与未决藏进表里，而读者读结论句的时候
+    # 不会回头核对表——那正是"不利数据同等公开"要防的呈现
+    "blocks.native_line.crossover": {
+        LANG_EN: "crossover (read at the judged concurrency {concurrency} only): the native form is "
+        "faster on {faster}; slower on {slower}; undecided on {undecided}. {boundary}",
+        LANG_ZH: "规模分界（只在判定并发度 {concurrency} 上判读）：原生形态更快的档位：{faster}；"
+        "更慢的档位：{slower}；分辨不出的档位：{undecided}。{boundary}",
+    },
+    "blocks.native_line.crossover_boundary": {
+        LANG_EN: "crossover point: up to {below} frame bytes the native form is not faster, at or "
+        "above {at_or_above} bytes it is",
+        LANG_ZH: "分界点：帧不超过 {below} 字节时原生形态不快，达到或超过 {at_or_above} 字节时更快",
+    },
+    "blocks.native_line.crossover_no_boundary": {
+        LANG_EN: "no crossover point is given - it is reported only when the per-tier signs are "
+        "monotonic and both directions occur (see the notes below)",
+        LANG_ZH: "不给分界点——只在逐档符号单调且两个方向都出现时才给（理由见下注）",
+    },
+    "blocks.native_line.tiers_none": {LANG_EN: "none", LANG_ZH: "无"},
+    # 路由结论：逐档两层（收敛 / 与对照一致）。逐档而不是一句话——收敛与否是逐档的事实，
+    # 压成一句话只能说"部分收敛"，读者无从知道是哪一档
+    "blocks.native_line.routing": {
+        LANG_EN: "routing at the judged concurrency, tier by tier (arm counts cover the measured "
+        "window; the exploration rate is the framework's resolved value):",
+        LANG_ZH: "路由形态逐档结论（逐臂次数取正式采样窗口，探索率取框架解析后的实际值）：",
+    },
+    "blocks.native_line.routing_tier": {
+        LANG_EN: "{tier} ({frame_bytes} bytes): arm counts native {native_n} / python {python_n}; "
+        "exploration rate {exploration} - {verdict}",
+        LANG_ZH: "{tier}（{frame_bytes} 字节）：逐臂次数 原生 {native_n} / 解释 {python_n}；"
+        "探索率 {exploration}——{verdict}",
+    },
+    "blocks.native_line.routing_converged": {
+        LANG_EN: "converged to the {arm}",
+        LANG_ZH: "已收敛到{arm}",
+    },
+    "blocks.native_line.routing_exploration_off": {
+        LANG_EN: "not running",
+        LANG_ZH: "未运行",
+    },
+    "blocks.native_line.routing_agrees": {
+        LANG_EN: "; agrees with the advantageous arm of the independent comparison ({arm})",
+        LANG_ZH: "；与独立对照得出的划算臂一致（{arm}）",
+    },
+    "blocks.native_line.routing_disagrees": {
+        LANG_EN: "; disagrees with the advantageous arm of the independent comparison ({arm})",
+        LANG_ZH: "；与独立对照得出的划算臂不一致（{arm}）",
+    },
+    "blocks.native_line.routing_agreement_unknown": {
+        LANG_EN: "; the agreement layer cannot be given: {reason}",
+        LANG_ZH: "；与对照的一致性给不出：{reason}",
+    },
+    # 不利数据章节里的一行指针：该线的劣势**不复制数字**过来，只指路（那几列是"方案 × 机身
+    # 档位"，该线是"形态 × 帧规模"，混排会被横向混读）
+    "blocks.unfavourable.native_line_pointer": {
+        LANG_EN: "the native-task line is a line of its own and is not mixed into the table above: "
+        "at its judged concurrency {concurrency} the native form is slower on {native_slower} and "
+        "the routing form is slower than pure interpretation on {routed_slower}; both are listed "
+        "with equal prominence, from the same paired comparison of the same run, in the "
+        '"{section}" section',
+        LANG_ZH: "原生任务线是独立的一条线，不与上表混读：在它的判定并发度 {concurrency} 上，"
+        "原生形态更慢的档位：{native_slower}；路由形态慢于纯解释形态的档位：{routed_slower}；"
+        "两者都在「{section}」一节内与有利档位对等列出，出自同一轮同一份配对差",
     },
     "blocks.favourable.title": {
         LANG_EN: "tiers where the framework under test is faster",
@@ -1356,6 +1532,62 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_EN: "Absolute durations (not comparable across runs)",
         LANG_ZH: "绝对耗时（不可跨运行比较）",
     },
+    # 原生任务线的跨版本对比。该节只比**同运行内的相对倍数**：每任务中位数跨运行不可比，
+    # 与上面那一节的既定口径同源
+    "compare.section.native_line": {
+        LANG_EN: "Native task line: three execution forms",
+        LANG_ZH: "原生任务线：三种执行形态",
+    },
+    "compare.native_line.note": {
+        LANG_EN: "this line contrasts three execution forms of the same subject and is not read "
+        "against the baseline adapters above; the comparable figure is the within-run ratio of "
+        "that form's per-task median to pure Python's. Per-task medians are not comparable across "
+        "runs and are therefore not listed here - take them from each version's own report",
+        LANG_ZH: "该线对照的是同一被测对象的三种执行形态，不与上面的对照方案横向读；可比的是"
+        "**同一次运行内**该形态每任务中位数与纯解释中位数之比。每任务中位数跨运行不可比，故不在"
+        "此列出——要看得各版本自己的报告",
+    },
+    "compare.native_line.side_absent": {
+        LANG_EN: "{label}: this side's archive has no such line (that run did not measure it)",
+        LANG_ZH: "{label}：该侧留档里没有这条线（那一轮未测）",
+    },
+    "compare.native_line.side_unusable": {
+        LANG_EN: "{label}: this line is {status} on this side ({reason}) - no comparison figures "
+        "can be given for it",
+        LANG_ZH: "{label}：该侧该线为 {status}（{reason}）——给不出它的对比数字",
+    },
+    "compare.native_line.verdict": {
+        LANG_EN: "{label}: judged at concurrency {concurrency}; native faster on {faster}; slower "
+        "on {slower}; undecided on {undecided}",
+        LANG_ZH: "{label}：判定并发度 {concurrency}；原生更快的档位：{faster}；更慢的档位："
+        "{slower}；未决的档位：{undecided}",
+    },
+    "compare.native_line.verdict_same": {
+        LANG_EN: "the crossover verdict is unchanged: both sides have the same faster, slower and "
+        "undecided tiers",
+        LANG_ZH: "分界结论未变：两侧更快、更慢与未决的档位相同",
+    },
+    "compare.native_line.verdict_moved": {
+        LANG_EN: "**the crossover verdict moved between the two sides** - read the two verdict "
+        "lines above side by side",
+        LANG_ZH: "**分界结论在两侧之间发生了移动**——请对照上面两行结论逐档读",
+    },
+    "compare.native_line.only_in_one": {
+        LANG_EN: "tiers present on one side only (dropped from the changes above rather than "
+        "silently intersected): {items}",
+        LANG_ZH: "只在一侧出现的档位（从上表的变化里去掉，而不是静默取交集）：{items}",
+    },
+    "compare.native_line.item": {
+        LANG_EN: "{tier} at concurrency {concurrency} (in {side} only)",
+        LANG_ZH: "{tier}、并发度 {concurrency}（只出现在 {side}）",
+    },
+    "compare.metric.native_line_ratio": {
+        LANG_EN: "that execution form's per-task median / pure Python's, taken within the same "
+        "run; a rise means that form got relatively slower than pure Python",
+        LANG_ZH: "该执行形态每任务中位数 / 纯解释中位数，取自同一次运行；上升即该形态相对纯解释"
+        "变慢",
+    },
+    "compare.header.form": {LANG_EN: "execution form", LANG_ZH: "执行形态"},
     "compare.cell.microseconds": {
         LANG_EN: "{value} microseconds",
         LANG_ZH: "{value} 微秒",
@@ -1627,6 +1859,196 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_ZH: "档位过短：几十微秒的窗口在共享 runner 上受调度颗粒度支配，不足以判定"
         "（原值已如实记录）",
     },
+    # ── 原生任务线（native_line/）────────────────────────────────────────
+    "native_line.caliber.unit": {
+        LANG_EN: "this dimension contrasts three execution forms of the same framework "
+        "(pure Python / native extension / online routing); the figures come from the scheduling "
+        "dispatch layer, the same level as the main matrix's zoo adapter. Only end-to-end per "
+        "task is obtainable here - on this path the framework reports no per-unit duration, and "
+        "this repository adds no instrumentation to it",
+        LANG_ZH: "本维度对照的是同一框架的三种执行形态（纯解释 / 原生扩展 / 在线路由）；数值取自"
+        "调度派发层，与主矩阵 zoo 档同一层级。此处只有每任务端到端一个量——框架在这条路径上不"
+        "提供单元自报耗时，本仓也不为它插桩",
+    },
+    "native_line.note.scope": {
+        LANG_EN: "this line is measured on its own: it enters neither the main matrix's pivot "
+        "tables nor its crossings, and its numbers must not be read against the baseline "
+        "adapters listed there",
+        LANG_ZH: "该线独立测量：它不进入主矩阵的透视表与交叉点，其数值也不可与那些表里的对照方案"
+        "横向比较",
+    },
+    "native_line.note.dilution": {
+        LANG_EN: "the dispatch layer's own overhead is a cost common to all three forms, so it "
+        "compresses the ratios between them: the framework's own per-arm records (see the arm "
+        "caliber note) show a much wider gap than end-to-end does. Read these ratios as 'running "
+        "this task through the dispatch layer', not as the execution form's own speedup",
+        LANG_ZH: "派发层自身的开销是三种形态的共同成本，故它压缩了形态之间的倍数：框架自记的逐臂"
+        "耗时（见臂口径的说明）相差比端到端大得多。这里的倍数应读成「把该任务经派发层跑完」，"
+        "而不是执行形态自身的加速比",
+    },
+    "native_line.note.arm_caliber": {
+        LANG_EN: "per-arm n and mean come from the framework's public statistics snapshot; that "
+        "mean is the execution unit's own wall time (the arm's body only) and is cumulative over "
+        "the whole group, warm-up included, so it cannot be converted to the per-arm counts, "
+        "which cover the measured window alone. It is a different caliber from end-to-end per "
+        "task, and the three must not be read as one column",
+        LANG_ZH: "逐臂次数与均值取自框架的公开统计快照；该均值是执行单元自身的墙钟（只含那一臂的"
+        "执行体），且是整组的累计值（含预热），故不可与「只覆盖正式采样窗口」的逐臂次数互相换算。"
+        "它与每任务端到端又是另一个口径，三者不可当作一列来读",
+    },
+    "native_line.note.crossover": {
+        LANG_EN: "the crossover verdict is read at the lowest concurrency only: beyond the "
+        "machine's parallel capacity the per-task wall time contains queueing wait, and then "
+        "whether native is faster no longer measures the execution form (the other concurrency "
+        "tiers are still measured and archived)",
+        LANG_ZH: "规模分界只在最低并发度上判读：并发度超过机器实际容量时，每任务墙钟里含排队等待，"
+        "那时「原生更快」与否测的就不再是执行形态（其余并发度的组照常测量与留档）",
+    },
+    "native_line.note.crossover_non_monotonic": {
+        LANG_EN: "the measured signs are not monotonic in frame size, so no crossover point is "
+        "given; the per-tier figures are reported as measured - that is a result, not noise to "
+        "be explained away",
+        LANG_ZH: "实测的符号随帧规模非单调，故不给分界点；逐档数值按实测如实给出"
+        "——这是结论，不是可以解释掉的噪声",
+    },
+    "native_line.note.crossover_undecided": {
+        LANG_EN: "one or more tiers are undecided at this caliber: the paired pure-vs-native "
+        "difference at that size spans zero over the measured cycles, so no order between the two "
+        "forms is established. Undecided tiers enter neither the faster nor the slower side and "
+        "take no part in the monotonicity test - counting them as 'not faster' would invent a "
+        "crossover point out of noise",
+        LANG_ZH: "有一档或多档在这份口径上分辨不出（该档纯解释与原生每任务耗时的配对差在实测周期"
+        "内跨零，故两形态的先后不成立），如实标为未决：它们既不进更快也不进更慢，也不参与单调性"
+        "判定——把它们当成「不快」会凭空造出一个分界点",
+    },
+    "native_line.note.routing": {
+        LANG_EN: "the routing verdict has two layers. Convergence: the arm actually taken is the "
+        "majority of the arm counts inside the measured window, and the minority's share must be "
+        "explainable by the exploration rate alone - counts are precise quantities, independent "
+        "of wall time, and the per-round increments are archived so a reader can follow the "
+        "settling. An arm the framework never took at all (cumulative snapshot, warm-up "
+        "included) makes the majority the framework's default rather than a decision, and that "
+        "is reported as such. Advantage: the two forms are contrasted by the paired per-task "
+        "difference within one cycle (a sampled difference, not two separately measured medians "
+        "subtracted), with no tolerance band (a band would turn 'inside it' into 'a tie'), and "
+        "only when that difference's quartile range does not span zero - otherwise this caliber "
+        "cannot tell them apart and the verdict is left undecided",
+        LANG_ZH: "路由结论分两层。收敛层：实际走的臂取**正式采样窗口内**逐臂次数的多数者，少数臂"
+        "的占比必须仅靠探索率就能解释——次数是精确量、与墙钟无关，且逐轮增量一并留档，读者可"
+        "复核它如何收敛。框架**一次都没走过**某一臂时（看含预热的累计快照），占多数的那个只是"
+        "框架的默认臂、不是决策结果，报告如实标出。划算层：取同一周期内纯解释与原生每任务耗时"
+        "之**差**（同一次采样的配对差，而不是两个各自测出的中位数相减），且无容差区间（有容差就"
+        "成了「落在区间内即算平」），并只在该差的四分位区间不跨零时才给——跨零即这份口径分辨"
+        "不出，此时结论如实留作未决",
+    },
+    "native_line.reason.capability_missing": {
+        LANG_EN: "the framework under test has no such capability (symbols not found: {missing}) "
+        "- this line does not apply to this version, and that is not a failure",
+        LANG_ZH: "被测框架不具备该能力（找不到这些符号：{missing}）——该线对此版本不适用，"
+        "这不是失败",
+    },
+    "native_line.reason.extension_unavailable": {
+        LANG_EN: "the native extension is unusable ({detail}); this line produces no figures",
+        LANG_ZH: "原生扩展不可用（{detail}）；该线不产出任何数字",
+    },
+    "native_line.reason.task_missing": {
+        LANG_EN: "the extension does not register the task {task} (registered: {tasks})",
+        LANG_ZH: "扩展未注册任务 {task}（已注册：{tasks}）",
+    },
+    "native_line.reason.source_untraceable": {
+        LANG_EN: "the extension's install source cannot be read from {module}'s dist-info; with "
+        "no traceable source these figures cannot be attributed to a specific extension build",
+        LANG_ZH: "读不到 {module} 的安装来源（dist-info 记录缺失）；来源不可追溯时，这份数字"
+        "无法归属于某一份具体的扩展构建",
+    },
+    "native_line.reason.source_mismatch": {
+        LANG_EN: "the extension was taken from {actual}, while the framework under test is "
+        "{expected} - native being faster would then point at another version's native "
+        "implementation",
+        LANG_ZH: "扩展取自 {actual}，而被测框架是 {expected}——不同源时「原生更快」这句话指向的是"
+        "另一个版本的原生实现",
+    },
+    "native_line.reason.equivalence_failed": {
+        LANG_EN: "the two arms are not equivalent on {count} input(s) ({keys}); no ratio is "
+        "produced until equivalence is proven",
+        LANG_ZH: "两臂在 {count} 条输入上不等价（{keys}）；等价性未获证明之前不产出任何倍数",
+    },
+    "native_line.reason.not_probed": {
+        LANG_EN: "the preconditions were not cleared, so no group was measured and no derived "
+        "figure exists",
+        LANG_ZH: "前置核验未通过，故一组都没测，也不存在任何派生数字",
+    },
+    "native_line.reason.native_switch_off": {
+        LANG_EN: "the native switch is off (native:enabled={native_enabled}, "
+        "adaptive:enabled={adaptive_enabled}) and the framework refuses at construction time to "
+        "build a worker that declares a native arm, so this form is reported as closed instead of "
+        "being measured; that is the framework's stated behaviour, not a failure",
+        LANG_ZH: "原生开关为假（native:enabled={native_enabled}、adaptive:enabled="
+        "{adaptive_enabled}），而框架对「声明了原生臂却未启用原生」在构造期显式拒绝（不许静默"
+        "回退解释臂），故这一形态按关闭语义示人、不给数字；这是框架的既定行为，不是失败",
+    },
+    "native_line.reason.child_failed": {
+        LANG_EN: "the measuring subprocess did not finish ({error})",
+        LANG_ZH: "测量子进程未跑完（{error}）",
+    },
+    "native_line.reason.group_failed": {
+        LANG_EN: "at least one measured group failed",
+        LANG_ZH: "至少有一个测量组失败",
+    },
+    "native_line.reason.derived_needs_all_groups": {
+        LANG_EN: "{failed} of {total} groups failed, so the derived figures are withheld instead "
+        "of being computed from the rest: the failures come from other processes, and a ratio "
+        "assembled from part of the grid would hide them",
+        LANG_ZH: "{total} 组里有 {failed} 组失败，故派生数字整体不给、而不是拿其余的组算出来："
+        "失败来自别的进程，用一部分格子拼出的倍数会把失败藏起来",
+    },
+    "native_line.reason.insufficient_samples": {
+        LANG_EN: "size {tier}: {total} counts inside the measured window, below the "
+        "{required_total} needed (or the exploration rate could not be read) - with that little "
+        "evidence neither a majority nor its agreement with the exploration rate means anything",
+        LANG_ZH: "规模 {tier}：正式采样窗口内一共 {total} 次，低于所需的 {required_total} 次"
+        "（或探索率取不到）——证据太少时，多数与「多数是否与探索率相符」都说明不了什么",
+    },
+    "native_line.reason.parent_failed": {
+        LANG_EN: "this line's own orchestration failed ({error}); the other dimensions and the "
+        "other versions are unaffected - the failure is reported here rather than allowed to "
+        "spread",
+        LANG_ZH: "该线自身的编排出错（{error}）；其余维度与其余版本不受影响——失败记在这里，"
+        "而不是让它扩散出去",
+    },
+    "native_line.reason.arm_untried": {
+        LANG_EN: "size {tier}: the {arm} arm was never taken in this group's {total} decisions, "
+        "so the arm that took the majority is the framework's default (used when the two means "
+        "are equal or unmeasured) rather than a decision this run reached. The independent "
+        "comparison still yields a verdict; this note says how much it rests on",
+        LANG_ZH: "规模 {tier}：本组 {total} 次决策里 {arm} 臂一次都没被走到，故占多数的那一臂是"
+        "框架的默认臂（两臂均值相等或未知时用它），而不是这一轮作出的选择。独立对照照常给出"
+        "结论，这条说明它有多少依据",
+    },
+    "native_line.reason.not_converged": {
+        LANG_EN: "size {tier}: the minority arm took {share_pct}% of this round's decisions, "
+        "above the {limit_pct}% that exploration alone (rate {exploration_pct}%) could explain - "
+        "the router has not settled on one arm, so which arm it routes to cannot be stated",
+        LANG_ZH: "规模 {tier}：少数臂占该轮决策的 {share_pct}%，高于仅靠探索（探索率 "
+        "{exploration_pct}%）所能解释的 {limit_pct}%——路由没有收敛到某一臂，故说不出"
+        "「它走的是哪一臂」",
+    },
+    "native_line.reason.below_resolution": {
+        LANG_EN: "size {tier}: the router did settle on one arm, but this caliber cannot tell the "
+        "two forms apart: the paired per-task difference between the pure and native forms, taken "
+        "within the same cycle, spans zero ({difference_p25_us}us to {difference_p75_us}us, median "
+        "{difference_median_us}us), so whether the arm taken is the advantageous one is left "
+        "undecided rather than guessed from noise",
+        LANG_ZH: "规模 {tier}：路由确实收敛到某一臂，但这份口径分辨不出两形态——同一周期内纯解释与"
+        "原生每任务耗时之差的四分位区间跨零（{difference_p25_us} 至 {difference_p75_us} 微秒，"
+        "中位 {difference_median_us} 微秒），故「走的那一臂是否划算」如实留作未决，而不是拿噪声"
+        "定夺",
+    },
+    "native_line.reason.no_strict_advantage": {
+        LANG_EN: "size {tier}: the pure and native medians are equal, so neither arm can be named "
+        "the advantageous one",
+        LANG_ZH: "规模 {tier}：纯解释与原生两组的中位数相等，分不出哪一臂划算",
+    },
 }
 
 #: `<html lang>` 属性值（deck 与站点页共用）。zh 的 BCP-47 值带地区：报告是简体中文。
@@ -1678,6 +2100,33 @@ def t(key: str, lang: str, **params: Any) -> str:
             f"缺 {sorted(expected - set(params))}、多 {sorted(set(params) - expected)}"
         )
     return text.format(**params)
+
+
+def resolve_reason(key: str, lang: str, params: Mapping[str, Any] | None = None) -> str:
+    """把"结论原因"（目录键 + 参数）渲染成该语言的文字.
+
+    留档里的原因存的是**键与参数**而不是句子：句子存进留档就随写入时的措辞冻结，改一次措辞
+    旧档与新档就再也对不上，两种语言的报告也会各存一份。
+
+    两处宽容是为了留档的**跨版本可读**：不在目录里的键（旧档里的散文）原样返回，模板已不再声明的
+    参数丢弃。反过来，模板要的参数若缺席则**照样抛**——那会把 `{foo}` 渲染进报告，是看不出是错的
+    失败形态（与 :func:`t` 同一理由）。
+
+    Args:
+        key: 目录键；不在目录里时按旧档散文处理。
+        lang: 目标语言。
+        params: 键对应的参数。
+
+    Returns:
+        该语言下的文字。
+    """
+    if not has_translation(key):
+        return key
+    template = MESSAGES[key].get(lang, "")
+    given = dict(params or {})
+    return t(
+        key, lang, **{name: given[name] for name in template_fields(template) if name in given}
+    )
 
 
 def missing_translations() -> list[str]:

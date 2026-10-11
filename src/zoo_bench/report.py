@@ -23,7 +23,7 @@ from .caliber import (
     overhead_is_interpretable,
     uninterpretable_reason,
 )
-from .i18n import LANG_ZH, t
+from .i18n import LANG_ZH, resolve_reason, t
 from .metrics import summarize
 from .runner import queueing_contaminated_groups
 
@@ -440,6 +440,7 @@ def _caveats(
     self_check: dict[str, Any],
     logical_cores: int | None,
     lang: str,
+    native_line: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """口径局限与偏差来源，逐条列明。"""
     caveats: list[dict[str, Any]] = []
@@ -521,6 +522,25 @@ def _caveats(
                 "count": len(withheld),
                 "text": t("report.caveat.withheld.text", lang),
                 "groups": withheld,
+            }
+        )
+
+    # 该线的失败**不进自检**（自检不过会拦住发布，而一条线的失败不该让其余版本的数据发不出去），
+    # 故它必须有别的出口：这里是报告侧的，CLI 侧是 :func:`zoo_bench.runner.summarize_native_line`。
+    # 两处都给而不是只留一处：只看报告的人与只看 CI 日志的人都不该漏掉它（design D12「不得静默」）
+    if isinstance(native_line, dict) and native_line.get("status") not in (None, "ok"):
+        caveats.append(
+            {
+                "kind": t("report.caveat.native_line.kind", lang),
+                "status": str(native_line.get("status")),
+                "text": t(
+                    "report.caveat.native_line.text",
+                    lang,
+                    status=str(native_line.get("status")),
+                    reason=resolve_reason(
+                        str(native_line.get("reason", "")), lang, native_line.get("reason_params")
+                    ),
+                ),
             }
         )
 
@@ -814,8 +834,115 @@ def _attribution_dimension(result: dict[str, Any], lang: str) -> dict[str, Any]:
     }
 
 
+def _line_form_labels(lang: str) -> dict[str, str]:
+    """三种执行形态的显示名，**取自形态清单本身**（``native_line.forms.FORMS``）.
+
+    不在报告层另写一份形态清单：两处清单迟早会漏掉一种形态，而漏掉的表现是报告里少一列——那看
+    起来像"没测"、不像"漏了"。故这里的键由清单生成，加一种形态时表格自动多一列。
+    """
+    from .native_line.forms import FORMS
+
+    return {form: t(f"native_line.form.{form}", lang) for form in FORMS}
+
+
+def _native_line_gate(equivalence: dict[str, Any]) -> dict[str, Any]:
+    """等价性门禁的结论（**通过与否都进报告**，并带上不等价的具体输入）.
+
+    门禁的定义见 :mod:`zoo_bench.native_line.equivalence`：它是该线其余数字的前提——扩展的输出
+    与 Python 参照不等价时，"原生更快多少"就没有落点。故报告里它与数值同层，不塞进脚注；而不
+    等价时给出**具体是哪条输入**：只说"未通过"，读者无从判断那是不是自己关心的那条。
+
+    **两侧的文字不进报告**：它们来自被测框架与扩展（本仓不可控，也无法保证中文字体覆盖），留档
+    里逐条俱全，报告只给输入身份（判据键、分组、帧的十六进制首段）。
+    """
+    if not equivalence:
+        return {"status": "not_run", "text": "report.native_line.gate_absent", "text_params": {}}
+    mismatches = [
+        {
+            "key": item.get("key"),
+            "group": item.get("group"),
+            "frame_hex": item.get("frame_hex"),
+            "frame_bytes": item.get("frame_bytes"),
+        }
+        for item in equivalence.get("mismatches") or []
+    ]
+    if equivalence.get("ok"):
+        return {
+            "status": "passed",
+            "text": "report.native_line.gate_ok",
+            "text_params": {
+                "checked": equivalence.get("checked"),
+                "envelope": equivalence.get("input_envelope_bytes"),
+            },
+            "mismatches": [],
+        }
+    return {
+        "status": "failed",
+        "text": "report.native_line.gate_failed",
+        "text_params": {"count": len(mismatches)},
+        "mismatches": mismatches,
+    }
+
+
+def _native_line_dimension(result: dict[str, Any], lang: str) -> dict[str, Any]:
+    """原生任务线维度：**同一被测框架**的三种执行形态在同一轮内的对照.
+
+    它与另外几个维度的根本差别在对照对象上：主矩阵的列是不同方案的适配器，而这里的三列是同一框架
+    自己的执行形态。故它的数值只在本维度内成立，**不进主矩阵的透视表与交叉点**（口径随
+    ``scope_note`` 一并进报告）。三态**分开示人**：``not_in_run`` 是"这次运行没有这条线"、
+    ``not_applicable`` 是"这个版本不具备该能力"、``failed`` 是"跑了，没成"——三者都不是同一个
+    事实，报告里 MUST NOT 合成一个"无数据"。
+
+    Args:
+        result: :func:`zoo_bench.runner.measure_matrix` 的返回值。
+        lang: 目标语言（形态显示名按语言取）。
+    """
+    line = result.get("native_line")
+    if not isinstance(line, dict):
+        return {
+            "title": "report.native_line.title",
+            "status": "not_in_run",
+            "scope_note": "native_line.note.scope",
+            "reason": "report.native_line.not_in_run",
+            "reason_params": {},
+            "gate": _native_line_gate({}),
+            "switches": {},
+            "plan": {},
+            "rows": [],
+            "crossover": {},
+            "routing": {},
+            "closed_groups": [],
+            "failed_groups": [],
+            "caliber": {},
+            "notes": [],
+            "form_labels": _line_form_labels(lang),
+        }
+
+    return {
+        "title": "report.native_line.title",
+        "status": str(line.get("status", "")),
+        "scope_note": "native_line.note.scope",
+        "reason": str(line.get("reason", "")),
+        "reason_params": dict(line.get("reason_params") or {}),
+        "gate": _native_line_gate(dict(line.get("equivalence") or {})),
+        "switches": dict(line.get("switches") or {}),
+        "plan": dict(line.get("plan") or {}),
+        # 逐 (规模, 并发度) 的行原样带过来：里面的中位数、配对差与倍数都是从留档复算得出的原始
+        # 量，报告层不再算第二遍（同源纪律，design D11）
+        "rows": [dict(row) for row in line.get("by_tier") or []],
+        "crossover": dict(line.get("crossover") or {}),
+        "routing": dict(line.get("routing") or {}),
+        "closed_groups": [dict(item) for item in line.get("closed_groups") or []],
+        "failed_groups": [dict(item) for item in line.get("failed_groups") or []],
+        "caliber": dict(line.get("caliber") or {}),
+        "notes": list(line.get("note") or []),
+        "form_labels": _line_form_labels(lang),
+    }
+
+
 def _unmeasured_semantics(lang: str) -> dict[str, Any]:
     """语义维度在**连探查都没跑**时的占位。
+
 
     与"探查跑了、结论是不可测"不同：那是结论，这是遗漏。两者的区分正是 ``reason`` 与
     ``items`` 的有无——报告里必须能看出是哪一种。
@@ -899,12 +1026,20 @@ def build_model(
             if resolved_semantics is not None
             else _unmeasured_semantics(lang),
             "attribution": _attribution_dimension(result, lang),
+            "native_line": _native_line_dimension(result, lang),
         },
         "favorable": classification["favorable"],
         "unfavorable": classification["unfavorable"],
         "tied": classification["tied"],
         "tie_band": {"definition": classification["band_definition"]},
-        "caveats": _caveats(units, result.get("verification", {}), self_check, logical_cores, lang),
+        "caveats": _caveats(
+            units,
+            result.get("verification", {}),
+            self_check,
+            logical_cores,
+            lang,
+            result.get("native_line"),
+        ),
         "absolute": {
             "note": result.get("run", {}).get("absolute_note"),
             "process_isolation": result.get("process_isolation", {}),

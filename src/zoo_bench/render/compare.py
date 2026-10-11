@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..i18n import t
+from ..i18n import has_translation, resolve_reason, t
 from .blocks import (
     BULLETS,
     HEADING,
@@ -18,6 +18,8 @@ from .blocks import (
     PARAGRAPH,
     TABLE,
     Block,
+    _list_join,
+    _tier_list,
     format_ratio,
 )
 
@@ -40,6 +42,125 @@ def _ratio_cell(change: dict[str, Any]) -> str:
     if change.get("ratio") is None:
         return change.get("direction", "—")
     return f"{change['direction']} {change['ratio']:.3f}x"
+
+
+def _form_label(form: str, lang: str) -> str:
+    """执行形态的显示名。**形态与臂不是同一套词表**，故各自取名；本仓没收录的形态原样透传。"""
+    key = f"native_line.form.{form}"
+    return t(key, lang) if has_translation(key) else str(form)
+
+
+def _native_line_side_line(side: dict[str, Any], lang: str) -> str:
+    """一侧该线的状态：那一轮没测 / 测了但用不了（带原因）/ 可用（给该侧自己的分界结论）.
+
+    **三态分开说话**：把"旧版本没有这项能力"与"这一轮测砸了"合成一句，读者会以为版本之间少了
+    一项能力；把"没测"与"不适用"一起吞成"无数据"，这一节就成了一片空白——而空白最容易被读成
+    "两边一样"。
+    """
+    if not side["present"]:
+        return t("compare.native_line.side_absent", lang, label=side["label"])
+    if not side["applicable"]:
+        return t(
+            "compare.native_line.side_unusable",
+            lang,
+            label=side["label"],
+            status=side["status"],
+            reason=resolve_reason(side["reason"], lang, side["reason_params"]),
+        )
+    verdict = side["verdict"] or {}
+    return t(
+        "compare.native_line.verdict",
+        lang,
+        label=side["label"],
+        concurrency=verdict.get("judgment_concurrency"),
+        faster=_tier_list(verdict.get("native_faster_tiers") or [], lang),
+        slower=_tier_list(verdict.get("native_slower_tiers") or [], lang),
+        undecided=_tier_list(verdict.get("undecided_tiers") or [], lang),
+    )
+
+
+def _native_line_blocks(native_line: dict[str, Any], lang: str) -> list[Block]:
+    """原生任务线的跨版本节：两侧各自可用状态 + 逐档逐形态的**同运行内倍数**变化.
+
+    位置在相对倍数节之后、绝对耗时节之前：它比的是与相对倍数同类的量（同运行内的比值），而绝对
+    耗时那节是"仅供看量级"的另一类。
+
+    表里**没有每任务中位数**——那是跨运行不可比的量（模块 docstring 第一条纪律）。读者若想看
+    量级，去各版本自己的报告；这里只给方向与幅度。
+    """
+    before, after = native_line["before"], native_line["after"]
+    blocks = [
+        Block(HEADING, text=t("compare.section.native_line", lang)),
+        Block(NOTE, text=t("compare.native_line.note", lang)),
+        Block(
+            BULLETS,
+            items=(
+                _native_line_side_line(before, lang),
+                _native_line_side_line(after, lang),
+            ),
+        ),
+    ]
+
+    if native_line["rows"]:
+        blocks.append(Block(NOTE, text=t("compare.metric.native_line_ratio", lang)))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=(
+                    t("blocks.header.tier", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("compare.header.form", lang),
+                    before["label"],
+                    after["label"],
+                    t("compare.header.change", lang),
+                ),
+                rows=tuple(
+                    (
+                        row["tier"],
+                        str(row["concurrency"]),
+                        _form_label(row["form"], lang),
+                        "—" if row["before"] is None else f"{row['before']:.3f}x",
+                        "—" if row["after"] is None else f"{row['after']:.3f}x",
+                        _ratio_cell(row),
+                    )
+                    for row in native_line["rows"]
+                ),
+            )
+        )
+
+    if native_line["verdict_same"] is not None:
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=t(
+                    "compare.native_line.verdict_same"
+                    if native_line["verdict_same"]
+                    else "compare.native_line.verdict_moved",
+                    lang,
+                ),
+            )
+        )
+
+    if native_line["only_in_one"]:
+        # 与 only_in_one 那一节同一条纪律：**列出来，不静默取交集**——档位变过时两侧就不是同一
+        # 批格子，变化无法归因
+        items = [
+            t(
+                "compare.native_line.item",
+                lang,
+                tier=item["tier"],
+                concurrency=item["concurrency"],
+                side=item["side"],
+            )
+            for item in native_line["only_in_one"]
+        ]
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=t("compare.native_line.only_in_one", lang, items=_list_join(items, lang)),
+            )
+        )
+    return blocks
 
 
 def build_blocks(comparison: dict[str, Any]) -> list[Block]:
@@ -176,6 +297,8 @@ def build_blocks(comparison: dict[str, Any]) -> list[Block]:
             ),
         )
     )
+
+    blocks += _native_line_blocks(comparison["native_line"], lang)
 
     blocks.append(Block(HEADING, text=t("compare.section.absolute", lang)))
     blocks.append(Block(NOTE, text=comparison["absolute_note"]))

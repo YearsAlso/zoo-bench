@@ -113,10 +113,20 @@ On top of that: every measurement unit runs in **its own process**; each adapter
 machine's real capacity, and very short body tiers) are **reported but not gated** — there they
 measure queueing and scheduling granularity, not the framework.
 
+**The native task line (0.11.0 onwards) is a line apart, and a caliber apart.** It compares **three
+execution forms of the same subject** — a pure Python arm, a native extension arm, and an online
+decision routing between the two — so it is **not read against the main matrix's baseline
+adapters**, and its numbers enter neither the pivot tables nor the crossings; the dimension's own
+opening note says exactly this in the report. Its load is a real task (Modbus RTU response-frame
+parsing) and its tiers are frame sizes. If the two arms' outputs are not byte-identical on the
+gate's inputs, the line publishes **no numbers at all**; if the subject lacks the capability (no
+extension installed, or a release before 0.11.0) it is **marked not applicable, with a reason**,
+rather than dropped from the report.
+
 ### Layout
 
 ```
-src/zoo_bench/     harness: adapters/ runner/ workloads/ render/ metrics/ semantics/ attribution/ cli
+src/zoo_bench/     harness: adapters/ runner/ workloads/ render/ metrics/ semantics/ attribution/ native_line/ cli
 matrix.yaml        what to measure
 results/           archived raw data (committed — public and version-addressed)
 openspec/specs/    authoritative specs (three capabilities)
@@ -234,10 +244,17 @@ zoo-bench compare 0.6.0 0.7.1b0 --out site/compare
 条件（并发度超出机器实际容量、执行体档位过短）**只报告不判否**——在那两处量到的是排队与
 调度颗粒度，不是框架。
 
+**原生任务线（0.11.0 起）是主矩阵之外的独立测量线，也是另一套口径。** 它对照的是**同一个被测
+对象自己的三种执行形态**（纯解释执行 / 原生扩展执行 / 由在线决策在两者间路由），故它**不与主矩阵
+的对照方案横向比较**、数值也不进主矩阵的透视表与交叉点——报告里该维度开头就写着这条口径。它以
+真实任务（Modbus RTU 响应帧解析）为负载、以帧长为档位。两臂输出在门禁的输入上**逐字节相同**
+这道前提不成立时，该线**一个数字都不给**；被测对象不具备该能力（未装扩展、或版本早于 0.11.0）时
+它**标为不适用并给出原因**，而不是从报告里消失。
+
 ### 目录结构
 
 ```
-src/zoo_bench/     harness：adapters/ runner/ workloads/ render/ metrics/ semantics/ cli
+src/zoo_bench/     harness：adapters/ runner/ workloads/ render/ metrics/ semantics/ attribution/ native_line/ cli
 matrix.yaml        测什么
 results/           留档的原始数据（进仓库 —— 公开且按版本可寻址）
 openspec/specs/    权威规格（三份能力）
