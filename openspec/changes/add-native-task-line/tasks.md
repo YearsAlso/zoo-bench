@@ -131,7 +131,7 @@
 ## 6. CI 与端到端
 
 - [ ] 6.1 `bench.yml` 加入扩展构建/安装步骤与"不配置统计落盘路径"的显式声明；验证：CI 一轮跑出该线数据并归档，且测量目录无新增文件
-  - **实现与本地验证已完成，CI 那一轮的验证待推送后补**（用户 2026-10-11 决定先不推）。已落地的三处工作流改动：① 第一步从**矩阵的 git 条目**读出框架仓库地址（不在工作流里另写——写了会破坏既有的「不出现框架仓库地址」断言，VIOLATION-45 实测确认）；② 循环里在「该线开着 + 被测版本具备该能力」时以 `expected_extension_revision` 推出的引用从 `native/` 子目录直装扩展（换目标前先卸，理由与框架那条同源：同版本号的直接引用会被 pip 当成已满足），装不上只出告警不计 failed（D12）；③ 新增 `if: always()` 的「核验原生任务线的测量目录无新增文件」一步（D6 的**旁证**——判据在配置层 `verify_switches`）。
+  - **实现与本地验证已完成；CI 那一轮的验证待合入 main 后补**。2026-10-11 已提交并推送分支 `change/native-task-line`（提交 `9745c55`，34 个文件）并开出 PR #5；`bench` 工作流只在 main 推送或手动触发时跑，**合入即触发**（用户 2026-10-11 选「推分支 → PR → 合入 main」，故本勾留空到那轮跑完）。已落地的三处工作流改动：① 第一步从**矩阵的 git 条目**读出框架仓库地址（不在工作流里另写——写了会破坏既有的「不出现框架仓库地址」断言，VIOLATION-45 实测确认）；② 循环里在「该线开着 + 被测版本具备该能力」时以 `expected_extension_revision` 推出的引用从 `native/` 子目录直装扩展（换目标前先卸，理由与框架那条同源：同版本号的直接引用会被 pip 当成已满足），装不上只出告警不计 failed（D12）；③ 新增 `if: always()` 的「核验原生任务线的测量目录无新增文件」一步（D6 的**旁证**——判据在配置层 `verify_switches`）。
   - 另在测量步骤的注释里**显式声明**：该线在 CI 上也 MUST NOT 配置统计落盘路径，本工作流不给框架摆任何配置（新增用例 `test_workflow_stages_no_framework_config` 把这条钉成断言：非注释行里不得出现 `statsPath` / `config.json`）；free-threaded 列的头注释补上「该线在这一列会如实报扩展不可加载、不出数字、不影响其余测量与发布」（D12，与 `test_an_unloadable_extension_is_a_failure_that_names_the_reason` 的实测形态一致）。
   - 本地已验（不依赖推送）：YAML 可解析、三处脚本过 `bash -n`；能力门禁的两条否定分支各自实测（该线未开 → exit 1；把四个能力符号用 meta path finder 遮掉 → `missing` 四个 → exit 1）；扫描脚本按 0 目录 / 干净 / 有杂质三种情形各跑一次；CI 拼出的安装规格与本机已测过的安装规格逐字相同。
   - 新增两条工作流用例（`tests/test_workflow.py`，16 passed）：`test_workflow_installs_the_extension_from_the_same_revision_as_the_target`（扩展安装**恰好一处**、引用经本仓函数推出、装前先问该线与能力）、`test_workflow_stages_no_framework_config`。**鉴别力验收**：VIOLATION-45（把仓库地址写成字面量）→ 该用例与既有的「不出现框架仓库地址」断言同时转红——正好证明"地址必须从矩阵读出"这条不是洁癖；VIOLATION-46（注入 `export ADAPTIVE_STATSPATH=/tmp/...`）第一版**未变红**（断言查的是 camelCase），改为忽略大小写后命中，两处还原后 md5 一致（`.github/workflows/bench.yml` = `a06c970829ff167e8268d9d630920d6a`，CRLF 未变），无残留 `VIOLATION` 标记。
@@ -140,7 +140,7 @@
   - 实测（档位由声明决定，真跑）：`matrix.yaml` → 计划 `registers=(1,8,125)` → `R1/R8/R125`（7/21/255 B）、预热 100 + 采样 100、并发沿用主矩阵 `(1,4,16,64)`。把**声明**改成 `registers: [2, 7]`、轮数 1/2、并发 `[1]`（改在 `matrix.yaml` 的副本上）后真跑该线（`zoo-framework==0.11.0` + 真扩展）：`status == "ok"`，计划的档位变 `R2/R7`（9/19 B、帧由档位构造成 `n × 2 + 5`），六格（三形态 × 两档）逐格 `measurement.tier` 都是新档位——配置改了就改了测量，档位不是常量。
   - 实测（源码无第二处声明，全 `src/zoo_bench/` 扫描）：轮数写成字面量 **0 处**；「档位列表式字面量」4 处**全是读或派生**——`matrix.py:127` 读声明、`line.py:117` 与 `measure.py:614` 从 `plan.tiers` 派生、`reference.py:134` 是参考实现里同名的无关局部变量。形态侧只有 `forms.py:43` 一处声明，`line.py:116/264` 的 `list(FORMS)` 是**引用**而非第二份清单。
 - [ ] 6.3 端到端核验：一轮真实 CI 出一份含该维度的报告并发布；验证：站点上该版本页含该维度、版本对比页含该维度，且三种格式与两种语言都可点达
-  - **未开始：待推送**（bench.yml 只在 main 推送或手动触发时跑，且会向 main 归档数据并发布站点；用户 2026-10-11 决定先不推）。本机已能覆盖到的部分在 5.1–5.5 与本组 6.2 里各有实测（三格式两语言、版本对比页、重渲染不需重测量），缺的只有"真机 CI 一轮 + 站点可达"这一层。
+  - **已推分支并开 PR #5（提交 `9745c55`），验收等合入 main 触发的那一轮 CI**（bench.yml 只在 main 推送或手动触发时跑，且会向 main 归档数据并发布站点；用户 2026-10-11 选「推分支 → PR → 合入 main」，故本勾留空到那轮跑完）。本机已能覆盖到的部分在 5.1–5.5 与本组 6.2 里各有实测（三格式两语言、版本对比页、重渲染不需重测量），缺的只有"真机 CI 一轮 + 站点可达"这一层。
 
 ## 7. 收尾
 
@@ -172,4 +172,4 @@
     - 还原后：三处源文件 md5 与备份**逐字节一致**；`src/` 与 `tests/` **无残留 `VIOLATION` 标记**；全量用例 **405 passed / 2 skipped / 71.10 s**（比 7.2 那次多 1 条，即本次新增的报告用例）。
   - **当前字节的 md5**（供下一位复核者对照；组 5 记的那三个值已被本次追加取代，历史记录保留在上文）：`native_line/line.py` = `6122c1614fdb1bbd2931f5d97f90056c`（原 `4eaf865d0ee0ee5194662fe8421a2e54`）、`render/blocks.py` = `ac1a2bf256c0cbc7afdc54bc3629c012`（原 `11f16aecfe6bddb4d316ee2f9b2a3695`）、`i18n.py` = `75bfc8f289fffa495b64f11a6f2409a4`（原 `4fd15c26c60c7b4d2b253aea9f7d51d3`）、`tests/test_native_line_report.py` = `ea66956c6e1c84a6f3f862d2970aef59`（原 `37ce3f0d93fd2419a9fdccfaed5f7d05`）、`tests/test_native_line_archive.py` = `6c98231e3efbe41fa4ee85168c7d46cb`。本次**未触及** `native_line/measure.py`、`report.py`、`native_line/reference.py`，故它们各自的 md5 仍与上文各组记录一致。
   - **归档时的待办（一行改动，不属于本变更的代码）**：README 目录结构里 `openspec/specs/ 权威规格（三份能力）`，在新能力随归档合入 `openspec/specs/` 之后要改成「四份」——此刻它还是 delta，改了反倒与仓里的事实不符。
-  - **仍未做（待推送，见 6.1/6.3）**：真 CI 轮与该线在公开站点的可达性。
+  - **仍未做（等合入 main 后的那一轮 CI，见 6.1/6.3）**：真 CI 轮与该线在公开站点的可达性。分支与 PR 已就绪（`change/native-task-line` / PR #5 / 提交 `9745c55`），本机侧无遗留。
