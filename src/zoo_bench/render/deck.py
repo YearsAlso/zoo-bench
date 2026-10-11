@@ -1713,16 +1713,26 @@ def render_deck(model: dict[str, Any], blocks: list[Block], *, title: str | None
     slides += _wins_slides(model, sections, lang)
     slides += _unfavorable_slides(model, sections, lang)
     slides += _attribution_slides(model, sections, lang)
-    slides += _section_slides(
-        _section_by_title(
-            sections,
-            dimension_section_prefix(lang)
-            # 留档里的题名是**目录键**（设计 D8：留档语言无关），块层用 resolve_text 解析；
-            # 这里必须走同一条解析，否则键与译文对不上、这一页会静默消失。
-            + resolve_text((dimensions.get("semantics") or {}).get("title") or "", lang),
-        ),
-        lang,
+    native_title = dimension_section_prefix(lang) + resolve_text(
+        (dimensions.get("semantics") or {}).get("title") or "", lang
     )
+    slides += _section_slides(_section_by_title(sections, native_title), lang)
+    # **兜底**：任何没在上面被显式处理的「维度：」章节也要出一页。页序是显式声明的（design D9），
+    # 而"显式声明"最容易犯的错就是漏——别的变更往报告里加一个新维度时，这一层不会有任何提示，
+    # 那个维度就**静默消失**了（实测：native-line 维度正是这样加进来的）。这一条与 spec 的
+    # 「MUST NOT 因此省略该维度」是同一件事。
+    handled = {
+        dimension_section_prefix(lang) + str((dimensions.get(key) or {}).get("title", ""))
+        for key in _CHART_SPECS
+    }
+    handled.add(native_title)
+    handled.add(
+        dimension_section_prefix(lang)
+        + str((dimensions.get("attribution") or {}).get("title", ""))
+    )
+    for section in sections:
+        if section.title.startswith(dimension_section_prefix(lang)) and section.title not in handled:
+            slides += _section_slides(section, lang)
     slides += _repro_slides(model, sections, lang)
     slides += _pointer_slides(model, lang)
     return _assemble(slides, resolved_title, lang)

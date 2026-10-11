@@ -1015,3 +1015,32 @@ def test_a_long_advantage_list_is_paginated_not_failed() -> None:
     ]
     assert len(continued) >= 1, "优势清单跨页时必须有续页标题"
     assert not [label for label in labels if label.endswith("（续）")], "不得退回「（续）」式的标题"
+
+
+def test_an_unlisted_dimension_still_gets_a_page() -> None:
+    """没被页序**显式声明**的「维度：」章节也要出一页——不能静默消失。
+
+    页序是显式声明的（design D9），而"显式声明"最容易犯的错就是漏：别的变更往报告里加一个新维度
+    时，这一层不会有任何提示，那个维度就消失在 deck 里了（实测上游的 native-line 维度正是这样加
+    进来的）。故所有 `维度：` 章节都处理完，未列出的走通用排法——与 spec 的「MUST NOT 因此省略该
+    维度」是同一件事。
+    """
+    model = _model()
+    extra = (
+        blocks_module.Block(
+            blocks_module.HEADING,
+            text=blocks_module.dimension_section_prefix(LANG_ZH) + "原生任务线",
+            level=2,
+        ),
+        blocks_module.Block(
+            blocks_module.TABLE,
+            headers=("形态", "每任务中位数"),
+            rows=(("直接调用", "120.00 微秒"),),
+        ),
+    )
+    page = deck_module.render_deck(
+        model, [*blocks_module.build_blocks(model, [], lang=LANG_ZH), *extra]
+    )
+
+    assert f"{blocks_module.dimension_section_prefix(LANG_ZH)}原生任务线" in page
+    assert "直接调用" in page, "那一节的数字也要在场，不能只留个标题"
