@@ -20,12 +20,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .caliber import exceeds_machine_parallelism
 from .metrics import summarize
+
+if TYPE_CHECKING:  # pragma: no cover - 仅为注解
+    from .native_line.line import NativeLinePlan
 
 #: 单个子进程的上限（秒）。不是被测指标，只用于避免挂死时整轮无终止。
 CHILD_TIMEOUT_SECONDS = 900.0
@@ -88,7 +93,12 @@ class UnitSpec:
 
 
 def run_in_child(
-    kind: str, spec: dict[str, Any], *, timeout: float = CHILD_TIMEOUT_SECONDS
+    kind: str,
+    spec: dict[str, Any],
+    *,
+    timeout: float = CHILD_TIMEOUT_SECONDS,
+    module: str = "zoo_bench.worker",
+    extra_search_path: Sequence[str] = (),
 ) -> dict[str, Any]:
     """在一个全新解释器里执行 ``kind``。
 
@@ -96,23 +106,34 @@ def run_in_child(
     是设计要求（design D4），把失败做成异常会毁掉整轮。
 
     Args:
-        kind: ``"verify"`` 或 ``"measure"``。
+        kind: 子进程要执行的操作。``module`` 为缺省值时是 ``"verify"`` / ``"measure"`` /
+            ``"semantics"`` / ``"attribution"`` 之一。
         spec: 传给子进程的规格（须可 JSON 序列化）。
         timeout: 子进程上限（秒）。
+        module: 子进程入口模块。默认 :mod:`zoo_bench.worker`；需要"配置先于框架 import"的
+            测量线自带入口（见 :mod:`zoo_bench.native_line.child`）——那个模块的**模块级**
+            就 import 了被测框架，配置目录摆进去也晚了（design D13）。
+        extra_search_path: 追加到继承路径**之前**的 import 路径。空元组即"只继承父进程的路径"。
+            存在的理由：本函数覆盖 `PYTHONPATH`，故"换一个模块来源"（如用一个与真扩展同名的
+            替身来核对失败语义）无法只靠子进程内的环境变量做到；而把替身塞进父进程的
+            ``sys.path`` 会污染本会话后续的全部 import（``zoo_framework`` 一旦已 import 就
+            再也遮不住），那是比被验证的行为更坏的代价。
 
     Returns:
         ``{"status": "ok", "child_elapsed_seconds": float, "payload": dict}`` 或
         ``{"status": "failed", "error": str, "stderr": str}``。
     """
     # 把父进程的 import 路径传下去，使外部适配器模块在全新解释器里也能被装载
-    search_path = os.pathsep.join(entry for entry in sys.path if entry)
+    search_path = os.pathsep.join(
+        [*(str(entry) for entry in extra_search_path), *(entry for entry in sys.path if entry)]
+    )
 
     with tempfile.TemporaryDirectory(prefix="zoo-bench-") as workdir:
         out_path = Path(workdir) / "result.json"
         command = [
             sys.executable,
             "-m",
-            "zoo_bench.worker",
+            module,
             kind,
             json.dumps(spec, ensure_ascii=False),
             str(out_path),
@@ -568,6 +589,48 @@ def summarize_self_check(self_check: dict[str, Any]) -> list[str]:
     ]
 
 
+def _run_native_line(specs: list[UnitSpec], plan: "NativeLinePlan") -> dict[str, Any]:
+    """跑原生任务线。**失败不上升为阻塞**（design D12）。
+
+    该线失败时其余版本与主矩阵照常完成测量、归档与发布，故这里连"父进程侧汇总自身出错"也收成
+    一个失败结论而不是抛出去：抛出去会毁掉整轮——那正是 D12 明确否掉的扩散形态（一条线的失败
+    掩盖其余版本的可信数据）。线内部的逐格失败由 :func:`run_line` 自己记进留档，不上来。
+
+    框架规格取自单元清单：一次运行只测一个版本（留档也按版本分目录），故清单里的规格就是该线要
+    与之核对扩展同源的那一个。清单为空时（``zoo-bench run`` 的路径上不会出现）不带规格，此时该线
+    只记录扩展来源、不判它与框架同源。
+    """
+    from .native_line.line import failed_payload, run_line
+
+    framework = specs[0].framework if specs else ""
+    try:
+        return run_line(framework, plan)
+    except Exception as exc:  # 见 docstring：任何失败都不得上升
+        return failed_payload(
+            framework,
+            plan,
+            reason="native_line.reason.parent_failed",
+            reason_params={"error": f"{type(exc).__name__}: {exc}"[:200]},
+            evidence=traceback.format_exc()[-2000:],
+        )
+
+
+def summarize_native_line(result: dict[str, Any]) -> list[str]:
+    """列出原生任务线的告警（该线 ``ok`` 或未开启时为空）。
+
+    该线的失败**不进**自检结论：自检不过会拦住报告的渲染与发布（``zoo-bench render`` 按它决定
+    退出码），而"一条线失败"不该让其余版本已经测出来的数据发不出去。代价是它必须有别的出口，
+    否则就成了静默失败——这里是 CLI 侧的出口，报告侧是 caveat（design D12）。
+    """
+    from .i18n import LANG_ZH, resolve_reason
+
+    line = result.get("native_line")
+    if not isinstance(line, dict) or line.get("status") == "ok":
+        return []
+    reason = resolve_reason(str(line.get("reason", "")), LANG_ZH, line.get("reason_params"))
+    return [f"原生任务线未出结论：{line.get('status')}（{reason}）—— 其余维度照常，该维度见报告告警"]
+
+
 def measure_matrix(
     specs: list[UnitSpec],
     *,
@@ -575,6 +638,7 @@ def measure_matrix(
     verify_concurrency: int = DEFAULT_VERIFY_CONCURRENCY,
     with_semantics: bool = True,
     with_attribution: bool = True,
+    native_line: "NativeLinePlan | None" = None,
 ) -> dict[str, Any]:
     """跑完一批测量单元，返回运行结果。
 
@@ -585,10 +649,13 @@ def measure_matrix(
         with_semantics: 是否探查调度语义维度（design D7）。探查在独立子进程内跑，
             结论带证据——"没有一项可测"也是结论，与"遗漏未测"必须区分得开。
         with_attribution: 是否跑开销归因探查（四段分解）。它同样是诊断维度，抽样一小批组即够。
+        native_line: 原生任务线的测量计划；None 表示该线不开（矩阵未声明它时就是这条路，
+            留档里相应为 None——"没这条线"与"这条线测了没成"在读留档时区分得开）。
 
     Returns:
         含 ``run`` / ``units`` / ``verification`` / ``process_isolation`` / ``self_check`` /
-        ``relative`` / ``semantics`` 的运行结果。可 ``json.dumps`` 落盘。
+        ``relative`` / ``semantics`` / ``attribution`` / ``native_line`` 的运行结果。
+        可 ``json.dumps`` 落盘。
     """
     started_at = time.time()
     run_started = time.perf_counter()
@@ -655,6 +722,10 @@ def measure_matrix(
     run_wall = time.perf_counter() - run_started
     isolated = check_process_isolation(units)
 
+    # 该线排在主矩阵**之后**：它自带一整批子进程与各自的上限（单格 900 s），排在前面时它把预算
+    # 花光的那次运行会连主矩阵的数都出不来——而主矩阵才是这个仓的主产出，诊断线的定性是次要的
+    native_line_result = None if native_line is None else _run_native_line(specs, native_line)
+
     return {
         "run": {
             "started_at_epoch": started_at,
@@ -674,4 +745,5 @@ def measure_matrix(
         "relative": _relative_block(units),
         "semantics": semantics,
         "attribution": attribution,
+        "native_line": native_line_result,
     }

@@ -22,7 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..i18n import LANG_EN, LANG_ZH, MESSAGES, has_translation, t, template_fields
+from ..i18n import LANG_EN, LANG_ZH, MESSAGES, has_translation, resolve_reason, t, template_fields
+from ..native_line.forms import FORM_NATIVE, FORM_PURE, FORM_ROUTED
 
 HEADING = "heading"
 PARAGRAPH = "paragraph"
@@ -665,7 +666,406 @@ def _dimension_blocks(model: dict[str, Any], lang: str) -> list[Block]:
         )
     if semantics.get("recheck_on_version_bump"):
         blocks.append(Block(NOTE, text=resolve_text(semantics["recheck_on_version_bump"], lang)))
+    blocks += _native_line_blocks(dimensions, lang)
     return blocks
+
+
+def _native_line_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
+    """原生任务线维度：**同一被测框架**的三种执行形态.
+
+    它**只在本节里出现**：数值不进主矩阵的透视表与交叉点——那几张表的列是"一个方案一个适配器"，
+    把"同一框架的三种执行形态"混进去就等于给出一个不成立的横向比较。范围说明紧接标题，理由与别的
+    维度相同：读者先看到限定，再看到数字。
+
+    结论句（该线状态、门禁、分界）与数值同层，不塞进脚注：门禁没过时这些数字的前提就不成立，
+    而前提残留在上、数字在下，读者会先接受数字。
+    """
+    line = dimensions.get("native_line")
+    if not line:
+        return []
+    labels = {
+        form: resolve_text(key, lang) for form, key in (line.get("form_labels") or {}).items()
+    }
+    blocks = [
+        _heading(
+            f"{dimension_section_prefix(lang)}"
+            f"{resolve_text(line.get('title') or 'report.native_line.title', lang)}"
+        ),
+        Block(
+            NOTE,
+            text=t(
+                "blocks.scope_note",
+                lang,
+                note=resolve_text(line.get("scope_note") or "", lang),
+            ),
+        ),
+        Block(PARAGRAPH, text=t("blocks.native_line.status", lang, status=line.get("status"))),
+    ]
+    if line.get("reason"):
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=resolve_text(line["reason"], lang, line.get("reason_params") or {}),
+            )
+        )
+
+    gate = line.get("gate") or {}
+    if gate.get("text"):
+        blocks.append(
+            Block(PARAGRAPH, text=resolve_text(gate["text"], lang, gate.get("text_params") or {}))
+        )
+    if gate.get("status") == "failed" and gate.get("mismatches"):
+        # 只说"未通过"读者无从判断哪条输入有问题；而两侧的文字来自被测框架与扩展（本仓不可控、
+        # 也保证不了中文字体覆盖），故报告给输入身份、全文留给留档
+        blocks.append(Block(NOTE, text=t("blocks.native_line.gate_detail", lang)))
+        blocks.append(
+            Block(
+                TABLE,
+                headers=(
+                    t("blocks.native_line.header_input", lang),
+                    t("blocks.native_line.header_group", lang),
+                    t("blocks.native_line.header_frame", lang),
+                    t("blocks.header.frame_bytes", lang),
+                ),
+                rows=tuple(
+                    (
+                        str(item.get("key", "")),
+                        str(item.get("group", "")),
+                        _hex_head(str(item.get("frame_hex", "")), lang),
+                        str(item.get("frame_bytes", "")),
+                    )
+                    for item in gate["mismatches"]
+                ),
+            )
+        )
+
+    plan = line.get("plan") or {}
+    if plan:
+        task_text = _native_line_task_text(plan, lang)
+        if task_text:
+            blocks.append(Block(NOTE, text=task_text))
+        blocks.append(
+            Block(NOTE, text=t("blocks.native_line.plan", lang, **_plan_params(plan, lang)))
+        )
+
+    # 分界结论紧接数字之前：它是这一维的回答，表是它的依据。三向（更快 / 更慢 / 未决）在同
+    # 一句里给出，理由见下面的 helper
+    crossover_text = _native_line_crossover_text(line.get("crossover") or {}, lang)
+    if crossover_text:
+        blocks.append(Block(PARAGRAPH, text=crossover_text))
+
+    rows = line.get("rows") or []
+    if rows:
+        blocks.append(Block(NOTE, text=t("blocks.native_line.caliber", lang)))
+        blocks.append(_native_line_table(rows, labels, lang))
+        for item in line.get("closed_groups") or []:
+            form = labels.get(str(item.get("form")), str(item.get("form")))
+            blocks.append(
+                Block(
+                    PARAGRAPH,
+                    text=t(
+                        "blocks.native_line.closed_forms",
+                        lang,
+                        forms=form,
+                        reason=resolve_text(
+                            str(item.get("reason", "")), lang, item.get("reason_params") or {}
+                        ),
+                    ),
+                )
+            )
+
+    blocks += _native_line_routing_blocks(line.get("routing") or {}, lang)
+
+    notes = _native_line_notes(line)
+    if notes:
+        blocks.append(Block(NOTE, text=t("blocks.native_line.notes", lang)))
+        blocks.append(Block(BULLETS, items=tuple(resolve_text(key, lang) for key in notes)))
+    return blocks
+
+
+def _native_line_notes(line: dict[str, Any]) -> list[str]:
+    """该维度的口径注（**去重保序**）.
+
+    口径注可能同时来自三个地方：该线自己的 ``note``、各格的口径块、以及分界结论自己的注。同名注
+    重复出现在报告里会让人以为有两条不同的限定，故此处按出现顺序去重。
+    """
+    seen: dict[str, None] = {}
+    for key in [
+        *(line.get("notes") or []),
+        *((line.get("caliber") or {}).get("notes") or []),
+        *((line.get("crossover") or {}).get("note") or []),
+    ]:
+        seen.setdefault(str(key), None)
+    # 范围说明已在标题下单独给出，不重复
+    return [key for key in seen if key != "native_line.note.scope"]
+
+
+def _native_line_task_text(plan: dict[str, Any], lang: str) -> str | None:
+    """所测任务那一段（spec: native_line「负载是真实任务这一事实可核」）.
+
+    任务名取自留档，不在渲染层另写一份：写死会让"报告说的任务"与"实际跑的任务"成为两处声明。
+    留档缺这一项时（早于该字段的留档）宁可不印，也不给读者印一个 ``None``。
+    """
+    task = plan.get("task")
+    if not task:
+        return None
+    return t("blocks.native_line.task", lang, task=task)
+
+
+def _plan_params(plan: dict[str, Any], lang: str) -> dict[str, Any]:
+    """规模档位那一段的参数（档位名与帧字节分开给，省得读者在括号里找数字）."""
+    tiers = plan.get("tiers") or []
+    return {
+        "tiers": _list_join((str(tier.get("label", "")) for tier in tiers), lang),
+        "frames": _list_join((str(tier.get("frame_bytes", "")) for tier in tiers), lang),
+        "concurrencies": _list_join((str(item) for item in plan.get("concurrencies") or []), lang),
+        "warmup": plan.get("warmup_rounds"),
+        "measured": plan.get("measured_rounds"),
+        "children": plan.get("child_count"),
+    }
+
+
+def _hex_head(frame_hex: str, lang: str) -> str:
+    """帧十六进制的前若干字符（整帧太长，表格里放不下；全文在留档里）."""
+    head = frame_hex[:_FRAME_HEX_HEAD]
+    if len(frame_hex) <= _FRAME_HEX_HEAD:
+        return head
+    return t("blocks.native_line.frame_truncated", lang, head=head, total=len(frame_hex))
+
+
+#: 报告里帧十六进制保留的字符数（= 16 字节的帧）。
+_FRAME_HEX_HEAD = 32
+
+
+def _native_line_table(rows: list[dict[str, Any]], labels: dict[str, str], lang: str) -> Block:
+    """逐 (规模, 并发度) 的三形态数值与相对倍数.
+
+    "更快的一方"一列取该格的**配对差**给出的先后（见 :mod:`zoo_bench.native_line.measure`）：
+    分辨不出时留"未决"而不是留白——留白会被读成"没测"，而那是这份口径给不出结论。
+    """
+    forms = list(labels)
+    judged = [form for form in forms if form in (FORM_NATIVE, FORM_ROUTED)]
+    headers = (
+        t("blocks.header.tier", lang),
+        t("blocks.header.frame_bytes", lang),
+        t("blocks.header.concurrency", lang),
+        *(labels[form] for form in forms),
+        *(t("blocks.native_line.header_ratio", lang, form=labels[form]) for form in judged),
+        t("blocks.native_line.header_faster", lang),
+    )
+    table_rows = tuple(
+        (
+            str(row.get("tier", "")),
+            str(row.get("frame_bytes", "")),
+            str(row.get("concurrency", "")),
+            *(format_seconds((row.get("medians_seconds") or {}).get(form), lang) for form in forms),
+            *(_multiple((row.get("ratios_vs_pure") or {}).get(form), lang) for form in judged),
+            (
+                labels.get(str(row.get("faster_form")), "")
+                if row.get("faster_form")
+                else t("blocks.native_line.undecided", lang)
+            ),
+        )
+        for row in rows
+    )
+    return Block(TABLE, headers=headers, rows=table_rows)
+
+
+def _multiple(value: float | None, lang: str) -> str:
+    """倍数 -> ``1.92x``（``x`` 与 :func:`_favorable_blocks` 里同一约定，两语言通用）."""
+    return t("blocks.empty_marker", lang) if value is None else f"{float(value):.2f}x"
+
+
+def _tier_list(tiers: Iterable[Any], lang: str) -> str:
+    """档位清单；空清单写"无"——留白会被读成"这里漏了一行"，而"这一向没有档位"是要说的事实."""
+    values = [str(tier) for tier in tiers]
+    return _list_join(values, lang) if values else t("blocks.native_line.tiers_none", lang)
+
+
+def _arm_label(arm: Any, lang: str) -> str:
+    """路由两臂的显示名。**臂与形态不是同一套词表**（``python`` 臂 ↔ 纯解释形态），故分开取名；
+    留档里出现本仓没收录的臂名时原样透传，不猜。"""
+    key = f"native_line.arm.{arm}"
+    return t(key, lang) if has_translation(key) else str(arm)
+
+
+def _exploration_rate(value: Any, lang: str) -> str:
+    """探索率 -> ``5.00%``（框架解析后的实际值）。
+
+    关闭态没有解析值（框架压根没取决策器），此时写"未运行"而不是留白或写 0：写成 0 会被读成
+    "探索率设成了 0"，那是另一个配置事实。
+    """
+    if value is None:
+        return t("blocks.native_line.routing_exploration_off", lang)
+    return f"{float(value) * 100.0:.2f}%"
+
+
+def _native_line_crossover_text(crossover: dict[str, Any], lang: str) -> str | None:
+    """规模分界结论的那句话；这份口径给不出结论时不返回一句空话。
+
+    **三向必须同句给出**（更快 / 更慢 / 未决）：只报"哪一档更快"的话，不利与未决就只剩表格里
+    的一列——读者读结论句时不会回头核对表，而那正是"不利数据 MUST 与有利数据同等公开"要防的
+    呈现。分界点也只在实测给得出时给（单调且两个方向都出现），给不出时说明理由所在。
+
+    Args:
+        crossover: 留档里的分界块（:func:`zoo_bench.native_line.line._crossover` 的产物）。
+        lang: 目标语言。
+
+    Returns:
+        结论句；没有判定并发度（该线没跑出数字）时为 None。
+    """
+    concurrency = crossover.get("judgment_concurrency")
+    if concurrency is None:
+        return None
+    boundary = crossover.get("boundary") or {}
+    boundary_text = (
+        t(
+            "blocks.native_line.crossover_boundary",
+            lang,
+            below=boundary.get("below_frame_bytes"),
+            at_or_above=boundary.get("at_or_above_frame_bytes"),
+        )
+        if boundary
+        else t("blocks.native_line.crossover_no_boundary", lang)
+    )
+    return t(
+        "blocks.native_line.crossover",
+        lang,
+        concurrency=concurrency,
+        faster=_tier_list(crossover.get("native_faster_tiers") or [], lang),
+        slower=_tier_list(crossover.get("native_slower_tiers") or [], lang),
+        undecided=_tier_list(crossover.get("undecided_tiers") or [], lang),
+        boundary=boundary_text,
+    )
+
+
+def _agreement_clause(agreement: dict[str, Any], lang: str) -> str:
+    """一致性那一层的一句话；给不出时**带上原因**，不静默略过。
+
+    "给不出"与"不一致"是两件事：前者是这份口径分辨不出两形态，后者是路由走的臂与独立对照相左
+    ——后者是结论，不能省。
+    """
+    agrees = agreement.get("agrees")
+    arm = _arm_label(agreement.get("advantageous_arm"), lang)
+    if agrees is True:
+        return t("blocks.native_line.routing_agrees", lang, arm=arm)
+    if agrees is False:
+        return t("blocks.native_line.routing_disagrees", lang, arm=arm)
+    return t(
+        "blocks.native_line.routing_agreement_unknown",
+        lang,
+        reason=resolve_reason(
+            str(agreement.get("reason", "")), lang, agreement.get("reason_params")
+        ),
+    )
+
+
+def _native_line_routing_blocks(routing: dict[str, Any], lang: str) -> list[Block]:
+    """路由结论：逐档给出两层（收敛 / 与独立对照一致）并给出所用探索率.
+
+    **逐档而不是一句话**：收敛与否是逐档的事实（实测同一轮里可以一档收敛、一档未收敛、一档
+    收敛且与对照一致），压成一句"部分收敛"读者就无从知道是哪一档，而"哪一档"正是这条结论的
+    全部用处。逐臂次数与探索率并排给出，是为了让读者能自己复核"少数臂占比是否只由探索解释"。
+
+    Args:
+        routing: 留档里的路由块（:func:`zoo_bench.native_line.line._routing` 的产物）。
+        lang: 目标语言。
+
+    Returns:
+        块列表；没有逐档数据（该线没跑出数字）时为空。
+    """
+    per_tier = routing.get("per_tier") or []
+    if not per_tier:
+        return []
+    blocks: list[Block] = [
+        Block(NOTE, text=resolve_text(routing.get("note") or "", lang)),
+        Block(PARAGRAPH, text=t("blocks.native_line.routing", lang)),
+    ]
+    items: list[str] = []
+    for item in per_tier:
+        convergence = item.get("convergence") or {}
+        if convergence.get("converged"):
+            verdict = t(
+                "blocks.native_line.routing_converged",
+                lang,
+                arm=_arm_label(item.get("dominant_arm"), lang),
+            )
+        else:
+            verdict = resolve_reason(
+                str(convergence.get("reason", "")), lang, convergence.get("reason_params")
+            )
+        verdict += _agreement_clause(item.get("agreement") or {}, lang)
+        items.append(
+            t(
+                "blocks.native_line.routing_tier",
+                lang,
+                tier=str(item.get("tier", "")),
+                frame_bytes=item.get("frame_bytes"),
+                native_n=(item.get("counts") or {}).get("native"),
+                python_n=(item.get("counts") or {}).get("python"),
+                exploration=_exploration_rate(item.get("exploration"), lang),
+                verdict=verdict,
+            )
+        )
+    blocks.append(Block(BULLETS, items=tuple(items)))
+    return blocks
+
+
+def _paired_verdict(row: dict[str, Any], first: str, second: str) -> Any:
+    """该格两形态对照的先后（留档里 ``faster_form`` 的三值原样取用）.
+
+    按**留档里记的 ``first`` / ``second``** 找那一对，而不是自己拼键名——键名的约定是留档层的
+    事，报告层再拼一遍就是第二处约定，两处迟早对不上而不报错。分辨不出时是 None（未决）。
+    """
+    for comparison in (row.get("comparisons") or {}).values():
+        if comparison.get("first") == first and comparison.get("second") == second:
+            return comparison.get("faster_form")
+    return None
+
+
+def _native_line_pointer_block(model: dict[str, Any], lang: str) -> Block | None:
+    """「不利数据」章节里指向该线的一行指针（**不复制数字**，只指路）.
+
+    为什么不把该线的行并进那一节的表：那张表的列是"方案 × 机身档位"，该线是"形态 × 帧规模"，
+    两套列混排会被横向混读（该线自己的口径写在它那一节的开头）。故这里只回答"该线也有劣势吗、
+    在哪看"——换了章节不等于少说一句，而它**只出现在不利章节**：该线的有利与不利在它自己那一
+    节内由同一句话、同一张表对等给出，这里不需要第二次。
+
+    Args:
+        model: 报告模型。
+        lang: 目标语言。
+
+    Returns:
+        指针块；该线没跑出数字、或两个方向都没有劣势时为 None。
+    """
+    dimension = (model.get("dimensions") or {}).get("native_line") or {}
+    crossover = dimension.get("crossover") or {}
+    rows = dimension.get("rows") or []
+    concurrency = crossover.get("judgment_concurrency")
+    if concurrency is None or not rows:
+        return None
+    native_slower = crossover.get("native_slower_tiers") or []
+    # 路由形态的劣势取同一份配对差（纯解释 vs 路由）给出的先后——与表里"更快的一方"同一列，
+    # 不另算一遍
+    routed_slower = [
+        str(row.get("tier"))
+        for row in rows
+        if row.get("is_judgment_concurrency")
+        and _paired_verdict(row, FORM_PURE, FORM_ROUTED) == FORM_PURE
+    ]
+    if not native_slower and not routed_slower:
+        return None
+    return Block(
+        NOTE,
+        text=t(
+            "blocks.unfavourable.native_line_pointer",
+            lang,
+            concurrency=concurrency,
+            native_slower=_tier_list(native_slower, lang),
+            routed_slower=_tier_list(routed_slower, lang),
+            section=resolve_text(dimension.get("title") or "report.native_line.title", lang),
+        ),
+    )
 
 
 def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
@@ -1153,30 +1553,33 @@ def _unfavorable_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     items = unfavorable.get("items", [])
     if not items:
         blocks.append(Block(PARAGRAPH, text=t("blocks.unfavourable.empty", lang)))
-        return blocks
-
-    blocks.append(
-        Block(
-            TABLE,
-            headers=(
-                t("blocks.header.baseline", lang),
-                t("blocks.header.concurrency", lang),
-                t("blocks.header.body_tier", lang),
-                t("blocks.header.gap", lang),
-                t("blocks.header.subject_median", lang),
-            ),
-            rows=tuple(
-                (
-                    item["baseline"],
-                    str(item["concurrency"]),
-                    f"{item['body_tier_us']:g}",
-                    item["gap"],
-                    format_seconds(item["subject_median_seconds"], lang),
-                )
-                for item in items
-            ),
+    else:
+        blocks.append(
+            Block(
+                TABLE,
+                headers=(
+                    t("blocks.header.baseline", lang),
+                    t("blocks.header.concurrency", lang),
+                    t("blocks.header.body_tier", lang),
+                    t("blocks.header.gap", lang),
+                    t("blocks.header.subject_median", lang),
+                ),
+                rows=tuple(
+                    (
+                        item["baseline"],
+                        str(item["concurrency"]),
+                        f"{item['body_tier_us']:g}",
+                        item["gap"],
+                        format_seconds(item["subject_median_seconds"], lang),
+                    )
+                    for item in items
+                ),
+            )
         )
-    )
+    # 本节为空也要给指针：主矩阵没劣势，不等于该线没劣势——那正是读者会来这一节找的东西
+    pointer = _native_line_pointer_block(model, lang)
+    if pointer is not None:
+        blocks.append(pointer)
     return blocks
 
 

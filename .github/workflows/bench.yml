@@ -59,6 +59,11 @@ jobs:
         run: |
           set -u
           mkdir -p site
+          # 原生任务线的扩展要从**框架仓**的同一引用装（理由见循环里的说明），而仓库地址**只声明
+          # 在矩阵的那条 git 引用条目里**（design D9 的"同源"靠的就是它），这里从矩阵读出来，
+          # 不在本文件里再写一份——另写一份不会跟着矩阵改，也照样得在改矩阵时被想起来。
+          repo=$(python -c "from zoo_bench import matrix as m; from zoo_bench.targets import parse_target as p; \
+            specs=[item for item in m.load().frameworks if 'git+' in item]; print(p(specs[0]).url if specs else '')")
           failed=""
           while read -r framework; do
             [ -n "$framework" ] || continue
@@ -75,6 +80,44 @@ jobs:
               "from zoo_bench.targets import parse_target; print(parse_target('''$framework''').name)")
             python -m pip uninstall -y "$name" || true
             python -m pip install "$framework"
+
+            # 原生任务线的扩展（design D9）：从框架仓**同一引用**的 `native/` 子目录直装，
+            # maturin 就地构建——编译发生在计时之前，不进计时区间。期望引用由
+            # `expected_extension_revision` 从框架规格推出（PyPI 目标的约定是 tag `v<版本>`），
+            # 仓库地址由上面从矩阵读出；**两样都不在本文件里另写**，本文件照旧不出现版本字面量。
+            #
+            # 只在「该线开着 + 被测版本具备该能力」时装：0.10.0 及更早没有这套符号，该线本就会
+            # 如实报"不适用"，装上去只是白烧一次编译（那些 tag 下也根本没有 `native/` 子目录）；
+            # 矩阵里删掉 `native_line` 一节即关线，那时同样不必装。
+            #
+            # 换目标前**显式卸掉**扩展，理由与框架那条同源（见上）：不同目标的扩展声明的是
+            # **同一个版本号**，pip 在版本号相同时会把直接引用当成"已满足"而根本不换，留下的
+            # 还是上一个目标的扩展。那会被该线判为"来源与被测框架不对应"——判否本身是设计要的，
+            # 但成因是安装没换掉，那是一条假红。包名同样取自本仓唯一声明它的地方。
+            #
+            # 装不上**不**计入 failed：该线的失败不扩散到主矩阵与其余版本（design D12），
+            # 由该线自身如实报失败、报告里带原因；这里再出告警注释，免得它以"线没开"的样子
+            # 静默消失（不出声的失败与"不必测"在日志里看不出区别）。
+            #
+            # 该线在 CI 上也 MUST NOT 配置统计落盘路径（design D6）：本工作流**不给框架摆任何
+            # 配置**——开关组合由该线自带的临时配置目录决定（那里只会有它自己的 config.json），
+            # 故这里没有、也不要加 `adaptive:statsPath` 之类的配置入口。判据在配置层
+            # （`native_line/config.py` 的 `verify_switches`：声明了该路径即整线判失败并给出路径），
+            # 落盘与否只作旁证——旁证由本步之后的「核验……无新增文件」一步在同一台机器上取。
+            if python -c "import sys; from zoo_bench import matrix as m; from zoo_bench.native_line.measure import probe_capability_symbols as probe; \
+              plan=m.native_line_plan(m.load()); sys.exit(0 if plan is not None and probe()['present'] else 1)"; then
+              revision=$(python -c \
+                "from zoo_bench.native_line.measure import expected_extension_revision; print(expected_extension_revision('''$framework''') or '')")
+              if [ -n "$repo" ] && [ -n "$revision" ]; then
+                extension=$(python -c \
+                  "from zoo_bench.native_line.measure import extension_source; print(extension_source()['package'])")
+                python -m pip uninstall -y "$extension" || true
+                python -m pip install "$extension @ git+$repo@$revision#subdirectory=native" || \
+                  echo "::warning::$framework 的原生扩展（引用 $revision）装不上——原生任务线会如实报失败并给出原因，主矩阵与其余版本不受影响"
+              else
+                echo "::warning::取不到扩展的仓库地址或 $framework 对应的引用，跳过扩展安装——该线会如实报失败，主矩阵与其余版本不受影响"
+              fi
+            fi
 
             # 输出目录取框架规格的 slug，与 storage.framework_slug 同一套规则
             slug=$(python -c \
@@ -134,6 +177,10 @@ jobs:
       # 留档走 results/gil-free/、报告走 site/<slug>-gil-free/：不与 3.13 列互盖。
       # continue-on-error：runner 没有 3.13t 产物时不摧毁整条 Pages 流水线——
       # 失败以橙色步骤如实可见，不造数据。
+      #
+      # 原生任务线在这一列会报"扩展不可加载"：本列不装扩展（那是为 3.13 构建的 cdylib，
+      # 3.13t 上要另一份产物，本列的目的只是解释器对照），该线因此如实判失败而**不出数字**，
+      # 也不影响这一列其余测量与发布（design D12）。这是预期形态，不是这一列坏了。
 
       - name: 设置 free-threaded 解释器（3.13t）
         continue-on-error: true
@@ -189,6 +236,41 @@ jobs:
             echo "::warning::free-threaded 列未完成：$failed"
             exit 1
           fi
+
+      - name: 核验原生任务线的测量目录无新增文件
+        # design D6 的**旁证**（判据在配置层，见测量步骤里的说明）。该线每个子进程都先建一个
+        # 临时目录、把开关组合摆成那里的 config.json，再**切目录并跑在那里**——故"计时区间内
+        # 有没有发生 I/O"最直接的痕迹就是这些目录：除 config.json 之外多出任何文件都值得看一眼
+        # （统计落盘路径若被配上，写出来的东西会落在这一处）。
+        #
+        # 与分目录名同一个来源（`native_line/config.py` 的 `CONFIG_DIR_PREFIX` / `CONFIG_FILENAME`），
+        # 这里不另写一份。目录名不必是本轮新建的：同一台机器上历轮留下的都看（前缀相同）。
+        #
+        # 放在 free-threaded 列之后：那一列同样跑该线，它的临时目录也在同一处。
+        # 出告警**不出失败**：这是旁证，不该挡住其余版本已经测出来的数据发布（design D12）；
+        # 真被配上了统计路径时，该线自身已经判失败并在报告里给出那个路径。
+        if: always()
+        run: |
+          set -u
+          python - <<'PY'
+          import pathlib
+          import tempfile
+
+          from zoo_bench.native_line.config import CONFIG_DIR_PREFIX, CONFIG_FILENAME
+
+          root = pathlib.Path(tempfile.gettempdir())
+          staged = sorted(item for item in root.glob(f"{CONFIG_DIR_PREFIX}*") if item.is_dir())
+          stray = {
+              str(directory): extra
+              for directory in staged
+              if (extra := sorted(item.name for item in directory.iterdir() if item.name != CONFIG_FILENAME))
+          }
+          print(f"该线的临时测量目录：{len(staged)} 个")
+          for directory, extra in stray.items():
+              print(f"::warning::原生任务线的测量目录 {directory} 除 {CONFIG_FILENAME} 外还有 {extra}")
+          if not stray:
+              print(f"每个目录的内容都只有 {CONFIG_FILENAME}")
+          PY
 
       - name: 写站点首页
         # 放在 free-threaded 列之后：首页收录全部已生成的报告列（含 <slug>-gil-free），

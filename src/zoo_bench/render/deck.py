@@ -610,11 +610,14 @@ def _cover_slide(model: dict[str, Any], subject: str | None, lang: str) -> Slide
     run = model.get("run") or {}
     source = model.get("source") or {}
 
+    # 各维度的行**不都是**按适配器索引的：原生任务线那几行是"形态 × 帧规模"，没有 adapter 这一列。
+    # 封面要的是"有哪些对照方案"，故只取带 adapter 的行——没有这一列的行跳过即可，而不是让封面崩掉
     adapters = {
         row["adapter"]
         for dimension in (model.get("dimensions") or {}).values()
         if isinstance(dimension, dict)
         for row in dimension.get("rows", [])
+        if row.get("adapter")
     }
     others = sorted(adapter for adapter in adapters if adapter != subject)
     eyebrow = _sep(lang).join(

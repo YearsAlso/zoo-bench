@@ -68,6 +68,145 @@ def _metric_semantics(lang: str) -> dict[str, str]:
     return {
         "overhead_ratio": t("compare.metric.overhead_ratio", lang),
         "speedup_vs_baseline": t("compare.metric.speedup_vs_baseline", lang),
+        "native_line_ratio": t("compare.metric.native_line_ratio", lang),
+    }
+
+
+def _native_line_side(run: dict[str, Any], *, label: str) -> dict[str, Any]:
+    """该侧该线的可读状态：有没有这条线、能不能用它出对比数（三态各有各的名字）.
+
+    "不适用"与"失败"与"没测"必须分开：把三态合成"无数据"，读者就分不清是旧版本本来没有这项
+    能力、还是这一轮测砸了——前者是事实，后者要看 CI 摘要。
+    """
+    line = run.get("native_line")
+    if not isinstance(line, dict):
+        return {
+            "label": label,
+            "present": False,
+            "applicable": False,
+            "status": "not_in_run",
+            "reason": "",
+            "reason_params": {},
+            "verdict": None,
+        }
+    status = str(line.get("status", ""))
+    crossover = line.get("crossover") or {}
+    verdict = (
+        {
+            "judgment_concurrency": crossover.get("judgment_concurrency"),
+            "native_faster_tiers": list(crossover.get("native_faster_tiers") or []),
+            "native_slower_tiers": list(crossover.get("native_slower_tiers") or []),
+            "undecided_tiers": list(crossover.get("undecided_tiers") or []),
+        }
+        if crossover.get("judgment_concurrency") is not None
+        else None
+    )
+    return {
+        "label": label,
+        "present": True,
+        "applicable": status == "ok",
+        "status": status,
+        "reason": str(line.get("reason", "")),
+        "reason_params": dict(line.get("reason_params") or {}),
+        "verdict": verdict,
+    }
+
+
+def _native_line_index(line: dict[str, Any]) -> dict[tuple[str, int], dict[str, Any]]:
+    """该线逐格留档索引成 ``(档位, 并发度) -> 行``。"""
+    return {
+        (str(row.get("tier")), int(row.get("concurrency"))): row
+        for row in line.get("by_tier") or []
+    }
+
+
+def _native_line_comparison(
+    before_run: dict[str, Any],
+    after_run: dict[str, Any],
+    *,
+    before_label: str,
+    after_label: str,
+    lang: str,
+) -> dict[str, Any]:
+    """原生任务线的跨版本对比：逐档逐形态的**同运行内倍数**变化，加上两侧的分界结论.
+
+    **只比同运行内的相对量**（与模块 docstring 的纪律同源）：这一节不看每任务中位数——那是跨
+    运行不可比的量，两侧各自由自己的倍数给出方向。两侧各自的倍数在同一次运行内两两对照得出，
+    对整体漂移不敏感。
+
+    **一侧不具备该能力时不产出任何变化数**：那种"对比"比的是一个数与一个缺失，读者拿到的
+    方向与幅度会凭空成立（spec: MUST NOT 以缺失数据充数）。故 ``comparable`` 为假时 ``rows``
+    为空，两侧各自的可用状态与原因照常给出。
+
+    Args:
+        before_run: 旧版本的运行结果。
+        after_run: 新版本的运行结果。
+        before_label: 旧版本的显示标签。
+        after_label: 新版本的显示标签。
+        lang: 目标语言。
+
+    Returns:
+        含两侧状态、``comparable``、``verdict_same``、``rows`` 与 ``only_in_one`` 的对比块。
+    """
+    before = _native_line_side(before_run, label=before_label)
+    after = _native_line_side(after_run, label=after_label)
+    comparable = bool(before["applicable"] and after["applicable"])
+
+    before_rows = _native_line_index(before_run.get("native_line") or {})
+    after_rows = _native_line_index(after_run.get("native_line") or {})
+    # 顺序取留档自身的档位序（plan 的声明序，如 R1 / R8 / R125）：按名字排序会把 R125 排到 R8
+    # 前面，读者按规模递增读时会对不上
+    shared = [key for key in before_rows if key in after_rows]
+    # 差集只在**真出了变化**的时候才报：不可比时一格变化都没有，"从变化里去掉的档位"这句话
+    # 指向一张不存在的表；而"某一侧根本没有这条线"已经由上面那一行状态说清了，再列一遍全部档位
+    # 只会把真正要看的差集埋掉
+    only_in_one = (
+        [
+            {
+                "tier": key[0],
+                "concurrency": key[1],
+                "side": before_label if key in before_rows else after_label,
+            }
+            for key in [*before_rows, *(key for key in after_rows if key not in before_rows)]
+            if key not in shared
+        ]
+        if comparable
+        else []
+    )
+
+    rows: list[dict[str, Any]] = []
+    if comparable:
+        for key in shared:
+            old_ratios = before_rows[key].get("ratios_vs_pure") or {}
+            new_ratios = after_rows[key].get("ratios_vs_pure") or {}
+            # 纯解释形态是分母（它的倍数恒为 1），故只有其余形态有可比的变化
+            rows.extend(
+                {
+                    "tier": key[0],
+                    "concurrency": key[1],
+                    "form": form,
+                    **_change(old_ratios.get(form), new_ratios.get(form), lang),
+                }
+                for form in sorted(set(old_ratios) & set(new_ratios))
+            )
+
+    before_verdict, after_verdict = before["verdict"], after["verdict"]
+    verdict_same = (
+        None
+        if before_verdict is None or after_verdict is None
+        else all(
+            before_verdict[key_name] == after_verdict[key_name]
+            for key_name in ("native_faster_tiers", "native_slower_tiers", "undecided_tiers")
+        )
+    )
+
+    return {
+        "before": before,
+        "after": after,
+        "comparable": comparable,
+        "verdict_same": verdict_same,
+        "rows": rows,
+        "only_in_one": only_in_one,
     }
 
 
@@ -277,6 +416,13 @@ def compare_versions(
         "only_in_one": only_in_one,
         "overhead_ratio": overhead,
         "speedup_vs_baseline": speedups,
+        "native_line": _native_line_comparison(
+            before_run,
+            after_run,
+            before_label=before_label,
+            after_label=after_label,
+            lang=lang,
+        ),
         "absolute_seconds": absolute,
         "absolute_note": t("compare.absolute_note", lang),
     }

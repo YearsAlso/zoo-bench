@@ -153,3 +153,42 @@ def test_workflow_publishes_only_after_the_bench_job(tmp_path: Path) -> None:
     assert deploy["needs"] == "bench", "发布必须先等测量完成"
     artifact = document["jobs"]["bench"]["steps"][-1]
     assert "upload-pages-artifact" in str(artifact["uses"])
+
+
+# ------------------------------------------------------------------ 原生任务线的 CI 接线（tasks 6.1）
+
+
+def test_workflow_installs_the_extension_from_the_same_revision_as_the_target() -> None:
+    """扩展与被测框架**同源**（design D9）在 CI 上的落实。
+
+    引用经本仓的 `expected_extension_revision` 从**矩阵的条目**推出、仓库地址从矩阵的 git 条目
+    读出，工作流里不另写一份——另写的那份不会跟着矩阵改，改矩阵的人也想不到它。目标清单里既有
+    已发布版本又有仓库引用，故写死一个 tag 就会让另一半目标装到不对源的扩展（该线会判否，但那是
+    一条由接线造出来的假红）。
+
+    只在「该线开着 + 被测版本具备该能力」时装：0.10.0 及更早没有这套符号，那些 tag 下也没有
+    `native/` 子目录，装了只是白烧一次编译。两条判据取自本仓的函数，不在工作流里另写。
+    """
+    text = _text()
+    installs = [line for line in text.splitlines() if "pip install" in line and "subdirectory" in line]
+    assert len(installs) == 1, f"扩展的安装应当只有一处：{installs}"
+    assert "$revision" in installs[0] and "$repo" in installs[0], installs[0]
+    assert "expected_extension_revision" in text, "引用必须经本仓的约定推出，不得在工作流里写死"
+    assert "probe_capability_symbols" in text and "native_line_plan" in text, "装之前先问该线开没开、这一版有没有能力"
+
+
+def test_workflow_stages_no_framework_config() -> None:
+    """design D6：该线 MUST NOT 配置统计落盘路径——工作流**不给框架摆任何配置**。
+
+    开关组合由该线自带的临时配置目录决定（那里只会有它自己的 `config.json`），故工作流里不该
+    出现任何配置入口——**包括以环境变量之类的形式**（今天框架只读 `config.json`，但"哪天它也读
+    环境变量"不该让这里静默变成配上了）。配上的后果是首次取决策器时的读盘落进计时区间，读回来
+    的统计还会成为这一轮的先验。
+
+    真正的判据在配置层（`native_line/config.py` 的 `verify_switches`：声明了该路径即整线判失败
+    并给出被拒的路径）；这条只是不让工作流成为那个入口。只看**非注释**的行：注释里正当要引用
+    这个键名（讲清为什么不能配它）。
+    """
+    code = "\n".join(line for line in _text().splitlines() if not line.lstrip().startswith("#"))
+    assert "statspath" not in code.lower(), "工作流里出现了统计落盘路径这个键"
+    assert "config.json" not in code.lower(), "工作流不该给框架摆配置文件"
