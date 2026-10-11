@@ -26,6 +26,54 @@ def test_missing_key_raises_instead_of_falling_back() -> None:
         i18n.t("no.such.key", i18n.LANG_EN)
 
 
+def test_folded_note_does_not_double_the_period() -> None:
+    """实修的那条拼接 bug：口径原因**自带句号**，模板再补一个就产出「……故照旧给出。。这些组……」。
+
+    这类错误不是缺字、不是错数，只是多了一个标点——在长报告里几乎看不出来，故它必须由机械检查
+    守住，而不是靠人眼。
+    """
+    for lang in i18n.LANGS:
+        text = i18n.t(
+            "compare.withheld.note",
+            lang,
+            count=1,
+            groups="g",
+            note=i18n.t("caliber.uninterpretable_reason", lang),
+        )
+        assert "。。" not in text, "中文侧拼出了两个连着的句号"
+        assert ".." not in text, "英文侧拼出了两个连着的句点"
+
+
+def test_the_punctuation_guard_fires_for_every_field_before_sentence_final_punctuation() -> None:
+    """模板里的参数占位符紧跟句末标点时，若该参数的值也以句末标点结尾，渲染 MUST 失败。
+
+    **判据是"取值"而不是"模板形状"**：目录里另有十几处合法写法（占位符后跟句号，但填进去的是
+    数值或方案名列表，永不带标点）。一律禁止会把这些读得通的句子一并否掉，故只在真的会拼出双标点
+    时报错——这条用例对每一处这样的模板各构造一个自带句号的取值，逐个确认它们都被拦下。
+    """
+    checked = 0
+    for key, entry in i18n.MESSAGES.items():
+        for lang, template in entry.items():
+            for name in i18n._FIELD_THEN_PUNCTUATION.findall(template):
+                params = dict.fromkeys(i18n.template_fields(template), 1)
+                params[name] = "值" + i18n.SENTENCE_FINAL[0]
+                with pytest.raises(i18n.PunctuationClash):
+                    i18n.t(key, lang, **params)
+                checked += 1
+    assert checked, "目录里一处这样的模板都没有？那这条守卫就是空的（要么守卫没接上）"
+
+
+def test_the_punctuation_guard_lets_a_clean_value_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """取值不带句末标点时照常渲染——守卫不能把合法写法一并否掉。"""
+    monkeypatch.setitem(
+        i18n.MESSAGES,
+        "test.punctuation.probe",
+        {i18n.LANG_EN: "probe {note}.", i18n.LANG_ZH: "探针 {note}。"},
+    )
+    for lang in i18n.LANGS:
+        assert i18n.t("test.punctuation.probe", lang, note="a probe")
+
+
 def test_template_parameter_mismatch_raises_both_ways() -> None:
     """少给参数会把 `{tier}` 印出来；多给参数说明调用点还在用旧签名。两者都必须抛。"""
     with pytest.raises(i18n.MissingTranslation):

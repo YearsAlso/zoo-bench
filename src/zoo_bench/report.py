@@ -113,12 +113,16 @@ def _overhead_crossings(
         )
         if not interpretable:
             note = uninterpretable_reason(lang)
+            note_kind = "uninterpretable"
         elif polluted:
             note = t("report.crossing.polluted", lang)
+            note_kind = "polluted"
         elif first_below is not None:
             note = t("report.crossing.smallest_match", lang)
+            note_kind = "smallest"
         else:
             note = t("report.crossing.none_below_threshold", lang)
+            note_kind = "none_below"
 
         crossings.append(
             {
@@ -131,18 +135,22 @@ def _overhead_crossings(
                 "queueing_contaminated": polluted,
                 "uninterpretable": not interpretable,
                 "note": note,
+                # **说明的类别**：块层据此把"最小满足者"那句逐行重复的话收成表下一条共同说明
+                # （实测它原先在 20 行里重复 20 遍）。按值比字符串太脆，故模型直接给出类别。
+                "note_kind": note_kind,
             }
         )
     return crossings
 
 
-def _relative_turnings(
-    result: dict[str, Any], subject: str | None, lang: str
-) -> list[dict[str, Any]]:
+def _relative_turnings(result: dict[str, Any], subject: str | None) -> list[dict[str, Any]]:
     """各对照方案从多大档位起不再快于被测框架。
 
     **实测可能不存在这样的档位**——那就如实报"未观测到"，不硬造一个。造一个假的交叉点比
     不报更坏：读者会拿它做决策。
+
+    **逐行不给说明**：每行的说明与其它行逐字相同（"最小的满足者"），原先重复 20 遍。读法由
+    块层在表下说一次（``blocks.turning.reading``）；"未观测到"与"无数据"的区分也在那里。
     """
     if subject is None:
         return []
@@ -178,11 +186,6 @@ def _relative_turnings(
                     "tiers_us": [row["body_tier_us"] for row in ordered],
                     "ratios_vs_subject": [row["ratio"] for row in ordered],
                     "first_tier_baseline_not_faster_us": first_not_slower,
-                    "note": (
-                        t("report.turning.smallest_match", lang)
-                        if first_not_slower is not None
-                        else t("report.turning.never_slower", lang)
-                    ),
                 }
             )
     return turnings
@@ -190,12 +193,15 @@ def _relative_turnings(
 
 def _summary(
     crossings: list[dict[str, Any]],
-    turnings: list[dict[str, Any]],
     subject: str | None,
     favorable: dict[str, Any],
     lang: str,
 ) -> list[str]:
     """结论摘要的句子。三个后端都直接用这几句，避免各写一遍导致措辞漂移。
+
+    **只给面向决策的三句**：被测框架自身的开销阈值交叉点、最好的一个优势档、指向下面两张矩阵
+    的引导。原先这里还有逐条列举每个（对照方案, 并发度）转折档位的句子（实测 20 条），它与紧随
+    其后的「转折点」表逐字重复——那部分内容现在由矩阵承担，摘要不再复制一遍。
 
     **开销交叉点只说被测框架那一行**。实测踩过这个坑：取所有方案里的最小值，于是头条写着
     "约 40 微秒 时开销降到 15% 以下"——那是某个对照方案的数字，而被测框架自己是 2700 微秒。
@@ -255,26 +261,7 @@ def _summary(
             )
         )
 
-    for turning in turnings:
-        if turning["first_tier_baseline_not_faster_us"] is not None:
-            lines.append(
-                t(
-                    "report.summary.turning_found",
-                    lang,
-                    concurrency=turning["concurrency"],
-                    tier=turning["first_tier_baseline_not_faster_us"],
-                    baseline=turning["baseline"],
-                )
-            )
-        else:
-            lines.append(
-                t(
-                    "report.summary.turning_missing",
-                    lang,
-                    concurrency=turning["concurrency"],
-                    baseline=turning["baseline"],
-                )
-            )
+    lines.append(t("report.summary.matrices", lang))
     return lines
 
 
@@ -283,7 +270,7 @@ def _summary(
 MIN_ROUNDS_FOR_BAND = 4
 
 
-def _unit_round_spread(unit: dict[str, Any]) -> float | None:
+def unit_round_spread(unit: dict[str, Any]) -> float | None:
     """某个测量单元"每任务中位数"的跨轮相对离散度（标准差 / 中位数）。
 
     **与逐单元表里的离散度不是一回事**：表里的 p95/p99 描述单元内任务之间的分布，而这里要的是
@@ -291,6 +278,9 @@ def _unit_round_spread(unit: dict[str, Any]) -> float | None:
     每任务中位数，再取这些中位数的相对离散度。
 
     样本不足（或老留档没有 ``rounds``）时返回 None：那时不判，见 :func:`_classify_relative`。
+
+    **公开函数**：跨版本对比要给"变化算不算数"用同一条带宽定义（见
+    :mod:`zoo_bench.compare`），两处各写一份必然漂移成两个阈值。
     """
     rounds = unit.get("rounds") or []
     samples = [
@@ -401,7 +391,7 @@ def _relative_classification(
             unit["spec"]["adapter"],
             int(unit["spec"]["concurrency"]),
             float(unit["spec"]["body_tier_us"]),
-        ): _unit_round_spread(unit)
+        ): unit_round_spread(unit)
         for unit in _successful(units)
     }
     classes = _classify_relative(result, subject, spreads, lang)
@@ -431,6 +421,132 @@ def _relative_classification(
             "band_max": max(bands) if bands else None,
         },
         "band_definition": t("report.tied.band_definition", lang),
+    }
+
+
+def _choice_matrix(
+    result: dict[str, Any],
+    subject: str | None,
+    classes: dict[str, list[dict[str, Any]]],
+    composition: Any,
+    lang: str,
+) -> dict[str, Any]:
+    """选型速查：每个 (并发度, 执行体档位) 上该用谁，或"分不出"。
+
+    单元格的取值规则**完全复用上面那次三分类**，不重新比较一遍：
+
+    - 取该格比值最小的对照方案；
+    - 它落在「被测框架更慢」类 → 单元格 = 该方案 + 相对被测框架的倍数；
+    - 它落在「被测框架更快」类 → 说明被测框架比**全部**对照都快且超出带宽 → 单元格 = 被测框架；
+    - 它落在「分不出胜负」类 → 单元格 = 「分不出」；
+    - 该格一个对照方案都没有 → 单元格 = 「无数据」。
+
+    **为什么不另立判据**：带宽是"两侧跨轮离散度之和"，随档位变化。再写一份比较逻辑就会与优/劣/平
+    三节给出互相矛盾的结论；复用意味着这一表的每一格都能在三节里找到出处。
+
+    Args:
+        result: 运行结果（取其中的逐档相对比）。
+        subject: 被测框架的适配器标识。
+        classes: :func:`_relative_classification` 的三分类结果（每类取其 ``items``）。
+        composition: 负载构成（``model["load"]["composition"]``）——"执行体是 CPU 型"这句以它为
+            依据，故不写死。
+        lang: 模型语言。
+
+    Returns:
+        ``{"rows": [...], "criterion": str, "body_note": str}``；``rows`` 每项含
+        ``concurrency`` / ``body_tier_us`` / ``kind`` / ``baseline`` / ``multiple``。
+    """
+    notes = {
+        "criterion": t("report.choice.criterion", lang),
+        "body_note": t("report.choice.body_note", lang, composition=composition),
+    }
+    if subject is None:
+        return {"rows": [], **notes}
+
+    fastest: dict[tuple[int, float], tuple[str, float]] = {}
+    cells: set[tuple[int, float]] = set()
+    for comparison in result.get("relative", {}).get("comparisons", []):
+        concurrency = int(comparison["concurrency"])
+        tier = float(comparison["body_tier_us"])
+        cells.add((concurrency, tier))
+        ratios = {
+            str(baseline): float(ratio)
+            for baseline, ratio in comparison.get("ratios_vs_subject", {}).items()
+        }
+        if ratios:
+            name = min(ratios, key=lambda key: ratios[key])
+            fastest[(concurrency, tier)] = (name, ratios[name])
+
+    kind_of: dict[tuple[str, int, float], str] = {}
+    for name, kind in (
+        ("unfavorable", "baseline"),
+        ("favorable", "subject"),
+        ("tied", "tied"),
+    ):
+        for item in classes[name].get("items", []):
+            kind_of[(item["baseline"], int(item["concurrency"]), float(item["body_tier_us"]))] = (
+                kind
+            )
+
+    rows: list[dict[str, Any]] = []
+    for concurrency, tier in sorted(cells):
+        entry = fastest.get((concurrency, tier))
+        if entry is None:
+            rows.append(
+                {
+                    "concurrency": concurrency,
+                    "body_tier_us": tier,
+                    "kind": "no_data",
+                    "baseline": None,
+                    "multiple": None,
+                }
+            )
+            continue
+        baseline, ratio = entry
+        kind = kind_of.get((baseline, concurrency, tier), "tied")
+        rows.append(
+            {
+                "concurrency": concurrency,
+                "body_tier_us": tier,
+                "kind": kind,
+                "baseline": baseline if kind == "baseline" else None,
+                "multiple": (1 / ratio) if kind == "baseline" and ratio > 0 else None,
+            }
+        )
+    return {"rows": rows, **notes}
+
+
+def process_isolation_summary(isolation: Any) -> dict[str, Any]:
+    """进程隔离检查的**可读摘要**——不留任何原始结构。
+
+    **为什么在模型层就把 PID 列表换掉**：留在模型里的原始结构，任何一个后端都可能顺手把它印
+    出来（实测就这么印满过一整页），而"把 PID 列表印进报告"这件事本身不会让任何功能断言变红。
+    模型里没有它，就谁都印不出来。原始字典仍在留档 JSON 里，那是机器可读数据。
+
+    字段缺失或为空字典时返回 ``{"present": False}``：自检项可能在老留档里根本没有，此时按既有
+    风格跳过该条，而不是报错。
+
+    Args:
+        isolation: 留档里的 ``process_isolation``。
+
+    Returns:
+        ``present`` / ``unit_count`` / ``distinct_pid_count`` / ``duplicate_count`` /
+        ``all_distinct`` / ``none_equals_parent``。
+    """
+    if not isinstance(isolation, dict) or not isolation:
+        return {"present": False}
+
+    raw = isolation.get("child_pids")
+    child_pids = [int(pid) for pid in raw] if isinstance(raw, list) else []
+    return {
+        "present": True,
+        "unit_count": len(child_pids),
+        "distinct_pid_count": len(set(child_pids)),
+        # PID 复用是"同一时刻出现两个相同 PID"的常见成因，但它**不是**唯一可能：它也可能是
+        # 采集期跨了进程退出。故这一项只用来解释，不用来判定通过。
+        "duplicate_count": len(child_pids) - len(set(child_pids)),
+        "all_distinct": isolation.get("all_distinct"),
+        "none_equals_parent": isolation.get("none_equals_parent"),
     }
 
 
@@ -869,8 +985,10 @@ def build_model(
     logical_cores = logical_cores_from_environment(resolved_environment)
 
     crossings = _overhead_crossings(units, contaminated, logical_cores, lang)
-    turnings = _relative_turnings(result, subject, lang)
+    turnings = _relative_turnings(result, subject)
     classification = _relative_classification(result, units, subject, lang)
+    composition = t("report.load.composition", lang)
+    failed_units = len(units) - len(_successful(units))
 
     return {
         "schema": MODEL_SCHEMA,
@@ -880,7 +998,7 @@ def build_model(
         "run": result.get("run", {}),
         "load": {
             "is_stand_in": True,
-            "composition": t("report.load.composition", lang),
+            "composition": composition,
             "caveat": t("report.load.caveat", lang),
         },
         "subject": subject,
@@ -888,7 +1006,8 @@ def build_model(
             "overhead_threshold": OVERHEAD_THRESHOLD,
             "overhead_crossings": crossings,
             "relative_turnings": turnings,
-            "summary": _summary(crossings, turnings, subject, classification["favorable"], lang),
+            "summary": _summary(crossings, subject, classification["favorable"], lang),
+            "choice": _choice_matrix(result, subject, classification, composition, lang),
             "note": t("report.conclusion.note", lang),
         },
         "dimensions": {
@@ -907,7 +1026,12 @@ def build_model(
         "caveats": _caveats(units, result.get("verification", {}), self_check, logical_cores, lang),
         "absolute": {
             "note": result.get("run", {}).get("absolute_note"),
-            "process_isolation": result.get("process_isolation", {}),
+            # **可读摘要，不是留档里的原始字典**：原始结构只在留档 JSON 里（见
+            # process_isolation_summary 的说明）。
+            "process_isolation": process_isolation_summary(result.get("process_isolation")),
+            "unit_count": len(units),
+            "valid_unit_count": len(_successful(units)),
+            "failed_unit_count": failed_units,
         },
         "self_check": self_check,
     }

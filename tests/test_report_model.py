@@ -14,6 +14,9 @@ import pytest
 
 from zoo_bench import i18n, storage
 from zoo_bench.i18n import LANG_ZH
+from zoo_bench.render import blocks as blocks_module
+from zoo_bench.render.blocks import build_blocks
+from zoo_bench.render.markdown import blocks_to_markdown
 from zoo_bench.report import OVERHEAD_THRESHOLD, build_model, subject_name
 from zoo_bench.runner import ABSOLUTE_NOTE
 
@@ -471,7 +474,12 @@ def test_unfavorable_lists_the_tiers_where_a_baseline_is_faster() -> None:
 
 
 def test_unfavorable_records_when_the_baseline_never_loses() -> None:
-    """对照方案在所测档位内始终更快时，明说"未观测到"，并把每个档位列为不利数据。"""
+    """对照方案在所测档位内始终更快时，**明说"未观测到"**，并把每个档位列为不利数据。
+
+    "未观测到"原先写在模型逐行的 ``note`` 里（那句与其它行逐字相同，实测重复了 20 遍）。它现在
+    由块层在表下说一次（``blocks.turning.reading``），模型只留**数值**：``None`` 就是"没观测到"，
+    与"那一格没有数据"是两回事，两者的措辞在块层分开表达。
+    """
     units = [
         _subject_unit(tier_us=tier, e2e_per_task=0.0001, body=0.00008) for tier in (40, 300)
     ] + [
@@ -490,9 +498,13 @@ def test_unfavorable_records_when_the_baseline_never_loses() -> None:
 
     turning = model["conclusion"]["relative_turnings"][0]
     assert turning["first_tier_baseline_not_faster_us"] is None
-    assert "未观测到" in turning["note"]
     assert len(model["unfavorable"]["items"]) == 2
-    assert any("始终快于" in line for line in model["conclusion"]["summary"])
+    # 矩阵里那一格渲染成「未观测到」，且表下说明它**是结论而不是缺数据**（原先那句"始终快于"
+    # 逐行重复 20 遍，现在由表下共同说明承担一次）。
+    rendered = blocks_to_markdown(build_blocks(model, [], lang=LANG_ZH))
+    assert blocks_module.t("blocks.turning.not_observed", LANG_ZH) in rendered
+    assert "始终快于被测框架" in rendered, "「在所测档位内始终更快」这条结论必须仍然在场"
+    assert "不是缺数据" in rendered
 
 
 def test_unfavorable_is_empty_when_the_subject_always_wins() -> None:

@@ -54,6 +54,14 @@ def unfavorable_section_title(lang: str) -> str:
     return t("blocks.section.unfavourable", lang)
 
 
+def choice_section_title(lang: str) -> str:
+    return t("blocks.section.choice", lang)
+
+
+def turning_section_title(lang: str) -> str:
+    return t("blocks.turning.title", lang)
+
+
 #: 中文字体普遍具备的非 ASCII 排版字符：中文标点、引号、破折号与全角符号。
 #:
 #: **之外的数学/排版符号（`微秒`、`−`、`÷`、`×`、`->`、`-` 等）中文字体不一定有**，表格里一旦
@@ -205,6 +213,18 @@ def format_ratio(value: float | None, lang: str) -> str:
     return t("blocks.empty_marker", lang) if value is None else f"{value * 100:.2f}%"
 
 
+def format_tier_us(tier_us: float, lang: str) -> str:
+    """执行体档位（微秒）-> 便于阅读的单位 + 数值。
+
+    **单位写中文**（微秒 / 毫秒），理由同 :func:`format_seconds`：`µ` 不在中文字体的可靠覆盖里，
+    而档位这一列在报告里出现几十次。换算与单位必须成对给出，否则会出现"10000 微秒"这种读者还
+    得自己换算的写法。
+    """
+    if tier_us >= 1000:
+        return f"{tier_us / 1000:g} {t('unit.milliseconds', lang)}"
+    return f"{tier_us:g} {t('unit.microseconds', lang)}"
+
+
 def repository_relative_path(path: str) -> str:
     """留档路径 -> **仓库内**相对路径（``results/<框架>/<时间戳>.json``）。
 
@@ -221,7 +241,7 @@ def repository_relative_path(path: str) -> str:
     return "/".join(parts[start:])
 
 
-def _list_join(values: Iterable[Any], lang: str, *, clause: bool = False) -> str:
+def list_join(values: Iterable[Any], lang: str, *, clause: bool = False) -> str:
     """按语言拼一列值：中文枚举用顿号、句子级用分号；英文一律逗号/分号。
 
     拼接发生在**调用侧**而不是目录里：目录只收已经拼好的整体（如 ``{seals}``），
@@ -246,7 +266,7 @@ def resolve_params(params: dict[str, Any] | None, lang: str) -> dict[str, Any]:
         if isinstance(value, str) and has_translation(value):
             resolved[key] = t(value, lang)
         elif isinstance(value, (list, tuple)):
-            resolved[key] = _list_join(
+            resolved[key] = list_join(
                 (resolve_text(item, lang) for item in value), lang, clause=True
             )
         elif isinstance(value, dict):
@@ -270,7 +290,7 @@ def resolve_text(value: Any, lang: str, params: dict[str, Any] | None = None) ->
         used = {k: v for k, v in resolve_params(params, lang).items() if k in fields}
         return t(value, lang, **used)
     if isinstance(value, (list, tuple)):
-        return _list_join((resolve_text(item, lang, params) for item in value), lang, clause=True)
+        return list_join((resolve_text(item, lang, params) for item in value), lang, clause=True)
     return str(value)
 
 
@@ -416,6 +436,11 @@ def _load_blocks(model: dict[str, Any], lang: str) -> list[Block]:
 
 
 def _conclusion_blocks(model: dict[str, Any], lang: str) -> list[Block]:
+    """结论摘要：面向决策的三句，加一张**开销阈值交叉点**表。
+
+    **摘要不再逐档列举**：原先这里还有 20 条"并发 X 下超过 Y 微秒后 Z 不再更快"的句子，与紧随
+    其后的转折点表逐字重复。那类内容现在由 :func:`_turning_blocks` 的矩阵承担。
+    """
     conclusion = model.get("conclusion", {})
     blocks = [
         _heading(conclusion_section_title(lang)),
@@ -426,6 +451,9 @@ def _conclusion_blocks(model: dict[str, Any], lang: str) -> list[Block]:
 
     crossings = conclusion.get("overhead_crossings", [])
     if crossings:
+        # 「该档位是所测档位中最小的满足者」原先在每一行重复一次（实测 20 行重复 20 遍）。
+        # 逐行只留**该行特有的**原因（超订、不可读、无一档达标），共同那句移到表下说一次。
+        shared = any(crossing.get("note_kind") == "smallest" for crossing in crossings)
         blocks += [
             _heading(t("blocks.crossing.title", lang), level=3),
             Block(
@@ -446,41 +474,176 @@ def _conclusion_blocks(model: dict[str, Any], lang: str) -> list[Block]:
                         t("blocks.empty_marker", lang)
                         if crossing["first_tier_at_or_below_threshold_us"] is None
                         else f"{crossing['first_tier_at_or_below_threshold_us']:g}",
+                        # 这一列的单位在表头里（微秒），故单元格只给数字——与「档位」类表头
+                        # 配合，不把单位重复两次
                         ", ".join(f"{tier:g}" for tier in crossing["tiers_us"]),
                         # "—"的**原因**必须当场给出：受排队污染与被撤下开销是两回事，
                         # 光看一个横杠分不出来
-                        str(crossing.get("note", "")),
+                        "" if crossing.get("note_kind") == "smallest" else str(crossing.get("note", "")),
                     )
                     for crossing in crossings
                 ),
             ),
         ]
+        if shared:
+            blocks.append(Block(NOTE, text=t("blocks.crossing.smallest_shared", lang)))
+    return blocks
 
-    turnings = conclusion.get("relative_turnings", [])
-    if turnings:
-        blocks += [
-            _heading(t("blocks.turning.title", lang), level=3),
-            Block(
-                TABLE,
-                headers=(
-                    t("blocks.header.baseline", lang),
-                    t("blocks.header.concurrency", lang),
-                    t("blocks.header.first_tier_not_faster", lang),
-                    t("blocks.header.note", lang),
-                ),
-                rows=tuple(
-                    (
-                        turning["baseline"],
-                        str(turning["concurrency"]),
-                        t("blocks.empty_marker", lang)
-                        if turning["first_tier_baseline_not_faster_us"] is None
-                        else f"{turning['first_tier_baseline_not_faster_us']:g}",
-                        turning["note"],
-                    )
-                    for turning in turnings
+
+def _choice_cell(cell: dict[str, Any] | None, subject: str | None, lang: str) -> str:
+    """选型速查里的一格。``kind`` 由模型给出，**不在渲染层重新判断谁快**。"""
+    if cell is None or cell.get("kind") == "no_data":
+        return t("blocks.cell.no_data", lang)
+    kind = cell.get("kind")
+    if kind == "tied":
+        return t("blocks.choice.cell.tied", lang)
+    if kind == "subject":
+        return t("blocks.choice.cell.subject", lang, subject=subject)
+    return t(
+        "blocks.choice.cell.baseline",
+        lang,
+        baseline=cell.get("baseline"),
+        multiple=float(cell["multiple"]),
+    )
+
+
+def _choice_blocks(model: dict[str, Any], lang: str) -> list[Block]:
+    """选型速查：行 = 并发度、列 = 执行体档位、格 = 该格最优方案或「分不出」。
+
+    **格子由模型导出**（``conclusion.choice.rows``），本函数只做排版；表下两条口径说明（单元格
+    判据、执行体类型与不可外推）也来自模型，故三个后端说的是同一件事。
+    """
+    choice = model.get("conclusion", {}).get("choice") or {}
+    rows = choice.get("rows") or []
+    if not rows:
+        return []
+
+    tiers = sorted({float(row["body_tier_us"]) for row in rows})
+    concurrencies = sorted({int(row["concurrency"]) for row in rows})
+    cells = {(int(row["concurrency"]), float(row["body_tier_us"])): row for row in rows}
+    subject = model.get("subject")
+
+    blocks = [
+        _heading(choice_section_title(lang)),
+        Block(
+            TABLE,
+            headers=(
+                t("blocks.header.concurrency", lang),
+                *(
+                    t("blocks.header.body_tier_n", lang, tier=format_tier_us(tier, lang))
+                    for tier in tiers
                 ),
             ),
-        ]
+            rows=tuple(
+                (
+                    str(concurrency),
+                    *(
+                        _choice_cell(cells.get((concurrency, tier)), subject, lang)
+                        for tier in tiers
+                    ),
+                )
+                for concurrency in concurrencies
+            ),
+        ),
+    ]
+    blocks += [
+        Block(NOTE, text=str(choice[key])) for key in ("criterion", "body_note") if choice.get(key)
+    ]
+    return blocks
+
+
+def _turning_cell(entry: dict[str, Any] | None, lang: str) -> str:
+    """转折点矩阵里的一格：有档位 / 未观测到 / 无数据——三者含义不同，必须分开表达。"""
+    if entry is None:
+        return t("blocks.cell.no_data", lang)
+    tier = entry.get("first_tier_baseline_not_faster_us")
+    if tier is None:
+        return t("blocks.turning.not_observed", lang)
+    return format_tier_us(float(tier), lang)
+
+
+def _turning_blocks(model: dict[str, Any], lang: str) -> list[Block]:
+    """转折点：行 = 对照方案、列 = 并发度的矩阵，外加被测框架自身那一行。
+
+    「未观测到」与「无数据」的分别不是排版细节：前者是**本期结论**（该方案在所测档位内始终
+    更快），后者是该并发度下压根没有单元。混在一起读者会把结论读成缺数据。
+    """
+    conclusion = model.get("conclusion", {})
+    turnings = conclusion.get("relative_turnings") or []
+    if not turnings:
+        return []
+
+    concurrencies = sorted({int(turning["concurrency"]) for turning in turnings})
+    baselines = sorted({str(turning["baseline"]) for turning in turnings})
+    by_key = {
+        (str(turning["baseline"]), int(turning["concurrency"])): turning for turning in turnings
+    }
+
+    blocks = [
+        _heading(turning_section_title(lang)),
+        Block(PARAGRAPH, text=t("blocks.turning.intro", lang)),
+        Block(
+            TABLE,
+            headers=(
+                t("blocks.header.baseline", lang),
+                *(
+                    t("blocks.header.concurrency_n", lang, concurrency=concurrency)
+                    for concurrency in concurrencies
+                ),
+            ),
+            rows=tuple(
+                (
+                    baseline,
+                    *(
+                        _turning_cell(by_key.get((baseline, concurrency)), lang)
+                        for concurrency in concurrencies
+                    ),
+                )
+                for baseline in baselines
+            ),
+        ),
+        Block(NOTE, text=t("blocks.turning.reading", lang)),
+    ]
+
+    subject = model.get("subject")
+    subject_crossings = [
+        crossing
+        for crossing in conclusion.get("overhead_crossings", [])
+        if crossing["adapter"] == subject
+    ]
+    if subject_crossings:
+        parts = []
+        for crossing in subject_crossings:
+            tier = crossing["first_tier_at_or_below_threshold_us"]
+            if tier is None:
+                parts.append(
+                    t(
+                        "blocks.crossing.subject_item_gap",
+                        lang,
+                        concurrency=crossing["concurrency"],
+                    )
+                )
+            else:
+                parts.append(
+                    t(
+                        "blocks.crossing.subject_item",
+                        lang,
+                        concurrency=crossing["concurrency"],
+                        tier=format_tier_us(float(tier), lang),
+                    )
+                )
+        blocks.append(
+            Block(
+                PARAGRAPH,
+                text=t(
+                    "blocks.crossing.subject_row",
+                    lang,
+                    subject=subject,
+                    threshold=float(conclusion.get("overhead_threshold", 0.0)),
+                    parts=list_join(parts, lang, clause=True),
+                ),
+            )
+        )
     return blocks
 
 
@@ -705,7 +868,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                 text=t(
                     "blocks.attribution.sampled",
                     lang,
-                    tiers=_list_join((f"{tier:g}" for tier in sampled), lang),
+                    tiers=list_join((f"{tier:g}" for tier in sampled), lang),
                     concurrencies=attribution.get("concurrencies"),
                     cores=attribution.get("cores"),
                 ),
@@ -786,7 +949,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                 text=t(
                     "blocks.attribution.seals",
                     lang,
-                    seals=_list_join(
+                    seals=list_join(
                         (resolve_text(seal, lang) for seal in seals), lang, clause=True
                     ),
                 ),
@@ -801,7 +964,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                 text=t(
                     "blocks.attribution.seals_missing",
                     lang,
-                    seals=_list_join(
+                    seals=list_join(
                         (resolve_text(name, lang) for name in missing), lang, clause=True
                     ),
                 ),
@@ -826,7 +989,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                 text=t(
                     "blocks.attribution.instrumentation_cost",
                     lang,
-                    costs=_list_join(
+                    costs=list_join(
                         (
                             t(
                                 "blocks.attribution.instrumentation_item",
@@ -874,7 +1037,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                     "blocks.attribution.additivity",
                     lang,
                     note=resolve_text(str(overlaps[0][3].get("note", "")), lang),
-                    overlaps=_list_join(
+                    overlaps=list_join(
                         (
                             t(
                                 "blocks.attribution.additivity_item",
@@ -906,7 +1069,7 @@ def _attribution_blocks(dimensions: dict[str, Any], lang: str) -> list[Block]:
                         lang,
                         concurrency=finding["concurrency"],
                         tier=finding["tier_us"],
-                        parts=_list_join(
+                        parts=list_join(
                             (
                                 f"{drill_labels.get(key, key)} {format_seconds(value, lang)}"
                                 for key, value in finding["subject_drill_down"].items()
@@ -1209,10 +1372,10 @@ def _methodology_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     run = model.get("run", {})
     warmups = run.get("warmup_rounds") or []
     rounds = run.get("measured_rounds") or []
-    warmup_text = _list_join((str(value) for value in warmups), lang) or t(
+    warmup_text = list_join((str(value) for value in warmups), lang) or t(
         "blocks.empty_marker", lang
     )
-    rounds_text = _list_join((str(value) for value in rounds), lang) or t(
+    rounds_text = list_join((str(value) for value in rounds), lang) or t(
         "blocks.empty_marker", lang
     )
 
@@ -1259,30 +1422,59 @@ def _caveat_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     return blocks
 
 
+def _isolation_line(isolation: dict[str, Any], lang: str) -> str:
+    """进程隔离那条自检的**可读结论**。
+
+    **不再渲染原始字典**：原先这里直接把留档里的 ``process_isolation``（父进程号 + 一串子进程
+    号）印进报告，九十多个数字铺满一整页，末尾还有一句没人解释的 ``'all_distinct': False``。
+    原始结构只在留档 JSON 里；这里只下结论。
+
+    判定顺序按"问题有多硬"排：有子进程等于父进程是**隔离不成立**，比 PID 重复严重，故先说它。
+    """
+    if not isolation.get("present"):
+        return t("blocks.self_check.isolation_missing", lang)
+    if isolation.get("none_equals_parent") is False:
+        return t("blocks.self_check.isolation_parent", lang)
+    if isolation.get("all_distinct") is False:
+        duplicates = int(isolation.get("duplicate_count") or 0)
+        if duplicates:
+            return t(
+                "blocks.self_check.isolation_duplicate",
+                lang,
+                count=int(isolation.get("unit_count") or 0),
+                duplicates=duplicates,
+            )
+        return t("blocks.self_check.isolation_flagged", lang)
+    return t(
+        "blocks.self_check.isolation_ok",
+        lang,
+        count=int(isolation.get("unit_count") or 0),
+    )
+
+
 def _self_check_blocks(model: dict[str, Any], lang: str) -> list[Block]:
     self_check = model.get("self_check", {})
-    return [
-        _heading(t("blocks.self_check.title", lang)),
-        Block(
-            BULLETS,
-            items=(
-                t(
-                    "blocks.self_check.overall",
-                    lang,
-                    verdict=(
-                        t("blocks.self_check.passed", lang)
-                        if self_check.get("ok")
-                        else t("blocks.self_check.failed", lang)
-                    ),
-                ),
-                t(
-                    "blocks.self_check.isolation",
-                    lang,
-                    value=model.get("absolute", {}).get("process_isolation", {}),
-                ),
+    absolute = model.get("absolute", {})
+    valid = absolute.get("valid_unit_count")
+    failed = absolute.get("failed_unit_count")
+    items = [
+        t(
+            "blocks.self_check.overall",
+            lang,
+            verdict=(
+                t("blocks.self_check.passed", lang)
+                if self_check.get("ok")
+                else t("blocks.self_check.failed", lang)
             ),
         ),
     ]
+    # 单元计数只在留档真的给了它的时候才报——老档没有这两个字段，补造一个数字比不报更坏
+    if valid is not None and failed is not None and int(valid) + int(failed) > 0:
+        items.append(
+            t("blocks.self_check.units", lang, total=int(valid), failed=int(failed))
+        )
+    items.append(_isolation_line(absolute.get("process_isolation") or {}, lang))
+    return [_heading(t("blocks.self_check.title", lang)), Block(BULLETS, items=tuple(items))]
 
 
 def _header_blocks(model: dict[str, Any], lang: str) -> list[Block]:
@@ -1333,6 +1525,10 @@ def build_blocks(
         _conclusion_blocks,
     ):
         blocks += builder(model, lang)
+    # 选型速查与转折点紧跟结论摘要：它们把摘要里那三句展开成可直接查表的答案，读者最先要的就是
+    # 这两张表（spec: 报告 MUST 给出选型速查）。
+    blocks += _choice_blocks(model, lang)
+    blocks += _turning_blocks(model, lang)
     blocks += _chart_blocks(charts, figures_rel, lang)
     blocks += _dimension_blocks(model, lang)
     # 优 / 平 / 劣三节同源同显著：读者按「赢在哪、分不出、输在哪」成对地读，任一方都不是脚注

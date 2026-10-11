@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from zoo_bench import cli, compare, storage
-from zoo_bench.i18n import LANG_ZH
+from zoo_bench.caliber import uninterpretable_reason
+from zoo_bench.i18n import LANG_ZH, t
 from zoo_bench.render import compare as compare_renderer
 
 BEFORE = "zoo-framework==1.0.0"
@@ -429,3 +430,76 @@ def test_compare_page_explains_what_an_unreadable_row_means() -> None:
 
     assert "不可读" in text
     assert "并行能力" in text
+
+
+# ------------------------------------------------------------------ 折叠没有判读意义的行
+
+
+def _rounds(median: float, concurrency: int, *, jitter: float) -> list[dict[str, Any]]:
+    """逐轮样本。**带宽由它算出**（见 report.MIN_ROUNDS_FOR_BAND），故"算不算实质变化"要靠它——"""
+    return [
+        {
+            "batch": concurrency,
+            "wall_seconds": concurrency * median * (1 + (index % 3 - 1) * jitter),
+            "round": index,
+        }
+        for index in range(6)
+    ]
+
+
+def test_rows_without_a_reading_are_folded_into_a_count() -> None:
+    """不可读的组与落在带宽内的行**折成计数**，有实质变化的行照旧逐行列出。
+
+    逐行铺开这三类行是本期最刺眼的一处噪声：96 行里 56 行不可读，它们说的是同一件事（该并发度
+    超出机器并行能力）；另有整片的变化落在带宽内，分不出是版本差异还是抖动。折叠后表里只剩
+    真的变了的那几行，而折掉了多少行、为什么折，当场写在表上方。
+
+    **三类分开断**：不可读、带宽内、不判定（样本不足）的成因不同，合成一句话会让读者无从判断
+    自己该不该去找那一行。
+    """
+    before = _run(
+        [
+            _unit("zoo", 4, 300.0, 0.30, 0.0004),
+            _unit("zoo", 64, 300.0, 0.30, 0.0004),
+            _unit("rival", 4, 300.0, 0.300, 0.0004),
+        ],
+        version="1.0",
+    )
+    after = _run(
+        [
+            # 占比减半：远超带宽，是**实质变化**
+            _unit("zoo", 4, 300.0, 0.15, 0.0004),
+            # 并发 64 超出 4 核：**不可读**
+            _unit("zoo", 64, 300.0, 0.31, 0.0005),
+            # 0.3% 的变化：落在**带宽内**（±2% 的逐轮抖动 ⇒ 带宽约 2.6%）
+            _unit("rival", 4, 300.0, 0.301, 0.0004),
+        ],
+        version="2.0",
+    )
+    for run in (before, after):
+        for unit in run["units"]:
+            unit["rounds"] = _rounds(0.0004, unit["spec"]["concurrency"], jitter=0.02)
+
+    text = compare_renderer.render_markdown(
+        compare.compare_versions(before, after, before_label="1.0", after_label="2.0", lang=LANG_ZH)
+    )
+
+    # **把断言限定在开销占比那一节**：绝对耗时表刻意保留了每一行（它整表标着"不可跨运行比较"、
+    # 用途是看量级），按整页搜会把那里的一行误判成"没折掉"。按标题切而不是按标题文字切——目录里
+    # 也列着同一个标题。
+    overhead = text.split("\n## " + t("compare.section.overhead_ratio", LANG_ZH), 1)[1]
+    overhead = overhead.split("\n## " + t("compare.section.speedup", LANG_ZH), 1)[0]
+    assert "| zoo | 64 |" not in overhead, "不可读的行被逐行铺开了"
+    assert "| rival | 4 |" not in overhead, "落在带宽内的行被逐行铺开了"
+    assert "| zoo | 4 |" in overhead, "有实质变化的行应当逐行列出"
+    assert (
+        t(
+            "compare.withheld.note",
+            LANG_ZH,
+            count=1,
+            groups="zoo/64",
+            note=uninterpretable_reason(LANG_ZH),
+        )
+        in text
+    ), "折叠说明应当点名是哪一组、多少行、为什么"
+    assert t("compare.folded.band", LANG_ZH, count=1) in text, "带宽内的折叠要给计数与判据"

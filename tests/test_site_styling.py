@@ -25,6 +25,9 @@ def _model() -> dict[str, Any]:
     return {
         "lang": LANG_ZH,
         "source": {"path": "results/x.json"},
+        # 真实模型**一定有** subject（没有它 render 命令会拒绝出报告，见 cli.render_command）；
+        # 少了它 deck 里那些"相对被测框架的倍数"页就无从生成，fixture 也就不再代表一份真报告。
+        "subject": "zoo",
         "environment": {
             "hardware": {"cpu_model": "测试 CPU", "logical_cores": 8, "platform": "Test-AMD64"},
             "os": {"system": "TestOS", "release": "1", "version": "1.0"},

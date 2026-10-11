@@ -32,6 +32,7 @@ from .caliber import (
     uninterpretable_reason,
 )
 from .i18n import t
+from .report import subject_name, unit_round_spread
 
 _ENVIRONMENT_KEYS = (
     "hardware.cpu_model",
@@ -39,6 +40,40 @@ _ENVIRONMENT_KEYS = (
     "hardware.platform",
     "python.version",
 )
+
+#: 变化的三类判定。**与报告同源**：带宽取两侧各自的跨轮相对离散度之和（见
+#: :func:`zoo_bench.report.unit_round_spread`），不另写一套固定百分比阈值——两套阈值会让同一份
+#: 站点的两处输出对"差异算不算数"给出不同答案。
+VERDICT_SUBSTANTIVE = "substantive"
+VERDICT_WITHIN_BAND = "within_band"
+VERDICT_NO_VERDICT = "no_verdict"
+
+
+def _round_spreads(run: dict[str, Any]) -> dict[tuple[str, int, float], float | None]:
+    """该次运行里每个 (适配器, 并发度, 档位) 的跨轮相对离散度。"""
+    spreads: dict[tuple[str, int, float], float | None] = {}
+    for unit in run.get("units", []):
+        if unit.get("status") != "ok":
+            continue
+        spec = unit["spec"]
+        spreads[(str(spec["adapter"]), int(spec["concurrency"]), float(spec["body_tier_us"]))] = (
+            unit_round_spread(unit)
+        )
+    return spreads
+
+
+def _sum_band(*values: float | None) -> float | None:
+    """两侧带宽之和；任一侧算不出（样本不足）就没有判据，返回 None。"""
+    if any(value is None for value in values):
+        return None
+    return float(sum(value for value in values if value is not None))
+
+
+def _verdict(ratio: float | None, band: float | None) -> str:
+    """变化算不算数。样本不足时**不判定**——编一个带宽等于让一个无法复核的数参与结论。"""
+    if ratio is None or band is None:
+        return VERDICT_NO_VERDICT
+    return VERDICT_SUBSTANTIVE if abs(ratio - 1.0) > band else VERDICT_WITHIN_BAND
 
 
 def _dig(source: dict[str, Any], path: str) -> Any:
@@ -180,6 +215,8 @@ def compare_versions(
     before_units = _index(before_run)
     after_units = _index(after_run)
     shared = sorted(set(before_units) & set(after_units))
+    before_spreads = _round_spreads(before_run)
+    after_spreads = _round_spreads(after_run)
 
     # 两侧各自的机器并行能力：跨版本对比里两次运行可能不在同一台机器上（那一点由
     # `environment` 那一节负责报警），故核数必须逐侧取，不能共用。
@@ -205,6 +242,22 @@ def compare_versions(
         )
         # 任一侧不可读，则"变化"没有意义——它比的是两个不可读的数之差。此时连两侧的原始
         # 比值都不给：读者会拿它自己去算一个数出来（见 zoo_bench.caliber）。
+        change = (
+            _change(
+                old["absolute"]["framework_overhead_ratio"],
+                new["absolute"]["framework_overhead_ratio"],
+                lang,
+            )
+            if readable
+            else {
+                "before": None,
+                "after": None,
+                "ratio": None,
+                "direction": t("compare.direction.unreadable", lang),
+            }
+        )
+        # 开销占比是同一个单元内的比值，故它的跨运行噪声就是该单元自身两侧的跨轮离散度之和
+        band = _sum_band(before_spreads.get(key), after_spreads.get(key))
         overhead.append(
             {
                 "adapter": adapter,
@@ -212,20 +265,9 @@ def compare_versions(
                 "body_tier_us": tier,
                 "interpretable": readable,
                 "note": "" if readable else uninterpretable_reason(lang),
-                **(
-                    _change(
-                        old["absolute"]["framework_overhead_ratio"],
-                        new["absolute"]["framework_overhead_ratio"],
-                        lang,
-                    )
-                    if readable
-                    else {
-                        "before": None,
-                        "after": None,
-                        "ratio": None,
-                        "direction": t("compare.direction.unreadable", lang),
-                    }
-                ),
+                "band": band,
+                "verdict": _verdict(change["ratio"], band),
+                **change,
             }
         )
         absolute.append(
@@ -238,17 +280,34 @@ def compare_versions(
             }
         )
 
-    # 相对倍数按 (对照方案, 并发度, 档位) 对照——两侧各有自己的相对比，再比它们
+    # 相对倍数按 (对照方案, 并发度, 档位) 对照——两侧各有自己的相对比，再比它们。
+    # **噪声要把分子分母都算上**：这个比值 = 对照方案中位数 / 被测框架中位数，两侧的离散度都会
+    # 传进比值里，故带宽 = 两次运行里（对照方案离散度 + 被测框架离散度）之和。
+    before_subject = subject_name(before_run.get("units", []))
+    after_subject = subject_name(after_run.get("units", []))
     before_ratios = _ratios_by_key(before_run)
     after_ratios = _ratios_by_key(after_run)
     for key in sorted(set(before_ratios) & set(after_ratios)):
         baseline, concurrency, tier = key
+        band = _sum_band(
+            _sum_band(
+                before_spreads.get((baseline, concurrency, tier)),
+                before_spreads.get((str(before_subject), concurrency, tier)),
+            ),
+            _sum_band(
+                after_spreads.get((baseline, concurrency, tier)),
+                after_spreads.get((str(after_subject), concurrency, tier)),
+            ),
+        )
+        change = _change(before_ratios[key], after_ratios[key], lang)
         speedups.append(
             {
                 "baseline": baseline,
                 "concurrency": concurrency,
                 "body_tier_us": tier,
-                **_change(before_ratios[key], after_ratios[key], lang),
+                "band": band,
+                "verdict": _verdict(change["ratio"], band),
+                **change,
             }
         )
 

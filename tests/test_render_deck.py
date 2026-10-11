@@ -18,11 +18,14 @@ from typing import Any
 
 import pytest
 
-from zoo_bench.i18n import LANG_ZH
+from zoo_bench.i18n import LANG_EN, LANG_ZH, t
 from zoo_bench.render import blocks as blocks_module
 from zoo_bench.render import deck as deck_module
 from zoo_bench.render import markdown as markdown_renderer
 from zoo_bench.render.assets import DECK_FRAMEWORK_JS, deck_asset
+from zoo_bench.render.blocks import build_blocks, format_tier_us
+from zoo_bench.report import build_model
+from zoo_bench.runner import ABSOLUTE_NOTE
 
 #: 四份 vendor 资产的 sha256（**按行尾归一后的文本算**，见 :func:`_asset_digest`）。它们取自一次
 #: 设计交付物、且标着 DO NOT EDIT，故改动只应来自"换了一版设计稿"——那时连同这个哈希一起更新，
@@ -52,6 +55,10 @@ _SLIDE = re.compile(
 )
 _ROW = re.compile(r"<tr>(.*?)</tr>", re.S)
 _CELL = re.compile(r"<td>(.*?)</td>", re.S)
+
+#: 「公开的不利数据」的标题（按语言取）。续页标题也以它为前缀——名字从块层取，不写字面量：
+#: 改名时两边一起变，认不出时下面的用例会红。
+unfavorable_title = blocks_module.unfavorable_section_title(LANG_ZH)
 
 
 def _model(
@@ -326,8 +333,10 @@ def test_unfavorable_slides_cover_every_tier_and_nothing_more() -> None:
     spec 的要求是"不利数据不因版面而变小"：只列一部分、或添上模型里没有的档位，两条都是不合格。
     故断的是集合（含重复计数）相等，不是"包含了"。
 
-    **夹具必须大到会触发分页上限**：条数少于一页时，截断这件事不会发生，这条断言也就无从证明
-    ——实测用 12 条时，把不利数据的豁免去掉它照样通过。
+    **夹具必须大到跨过一页容量**：条数少于一页时，截断这件事不会发生，这条断言也就无从证明
+    ——实测用 12 条时，把不利数据的豁免去掉它照样通过。原先的门槛是
+    ``SLIDE_ROW_CAP * SLIDES_PER_SECTION``（"每节最多两页"那条编辑策略的容量），而**那条策略
+    已被删除**：deck 不再按固定页数截断，不利数据按对照方案分组续排到底，故门槛改为一页的容量。
     """
     model = _model(baselines=tuple(f"rival_{index:02d}" for index in range(8)))
     expected = Counter(
@@ -335,32 +344,37 @@ def test_unfavorable_slides_cover_every_tier_and_nothing_more() -> None:
         for item in model["unfavorable"]["items"]
     )
 
-    assert len(expected) > deck_module.SLIDE_ROW_CAP * deck_module.SLIDES_PER_SECTION, (
-        "夹具要跨过每节上限，否则这条断言证明不了「不许只列一部分」"
+    assert len(expected) > deck_module.SLIDE_ROW_CAP, (
+        "夹具要跨过一页的容量，否则这条断言证明不了「不许只列一部分」"
     )
     assert _unfavorable_tiers_in(_deck(model)) == expected
 
 
-def test_unfavorable_is_not_capped_like_other_sections() -> None:
-    """不利数据不吃"每节最多两页"的上限——分页续排到底，且**不该出现指引页**。
+def test_no_section_is_truncated_by_a_page_cap_and_no_pointer_page_exists() -> None:
+    """没有整页的「明细指引」，也没有「（续）」这种只表示序号的页标题。
 
-    这一条防的是"顺手给所有章节加上限"：那样改动只在不利数据多起来时才露出来，而它恰恰是
-    报告最不能少的一节。
+    **这一条防的是把"每节最多两页"那条编辑策略加回来**：它一旦回来，多出来的内容就被送进一页
+    指引，而 0.10.0 的 deck 实测为此付了 4 页纯占位页。现在装不下就按语义边界续排——不利数据按
+    对照方案分组，续页标题点名它覆盖哪几家；指针降级为被截断那一页**页脚的一行**。
 
-    断言「没有明细指引页」而不是「页数够多」：指引页的标签也以本节名开头，按页数数会把它算进
-    去——实测那样写时，去掉豁免这条用例照样通过。
+    断言的是"指引页不存在"与"续页标题自述内容"，而不是"页数够多"：页数会随数据变，而这两件事
+    是结构约束。
     """
-    baselines = tuple(f"rival_{index:02d}" for index in range(8))
-    model = _model(baselines=baselines)
+    model = _model(baselines=tuple(f"rival_{index:02d}" for index in range(8)))
     labels = [label.split(" ", 1)[1] for label, _ in _slides(_deck(model))]
 
-    assert (
-        len(model["unfavorable"]["items"])
-        > deck_module.SLIDE_ROW_CAP * deck_module.SLIDES_PER_SECTION
+    assert len(model["unfavorable"]["items"]) > deck_module.SLIDE_ROW_CAP, (
+        "夹具要跨过一页容量，否则不会触发续排，这条断言也就无从证明"
     )
-    assert not [label for label in labels if "明细指引" in label and "不利数据" in label], (
-        "不利数据被截断了——它多出来的部分被送去全文，而不是续排"
+    assert not [label for label in labels if "明细指引" in label], (
+        "出现了整页明细指引——指针应当只在页脚一行"
     )
+    assert not [label for label in labels if label.endswith("（续）")], (
+        "页标题只是加了一个「（续）」——续页标题应说清这一页覆盖什么"
+    )
+    continued = [label for label in labels if label.startswith(unfavorable_title)]
+    assert len(continued) > 1, "不利数据跨了一页以上，续页标题应当点名覆盖了哪几个对照方案"
+    assert any("rival_" in label for label in continued), "续页标题没有点出对照方案名"
 
 
 def test_the_disadvantage_summary_names_every_rival() -> None:
@@ -401,9 +415,18 @@ def test_subject_bar_is_the_baseline_of_one() -> None:
     assert all(float(value) == 1.0 for value in subject_bars)
 
 
-def test_each_charted_dimension_keeps_its_value_table() -> None:
-    """图形不替代数值表：条形给结论，表给可核对的数。"""
+def test_each_dimension_is_charted_once_and_its_pivot_stays_in_the_full_text() -> None:
+    """一个维度在 deck 里**只讲一遍**：条形图在场，透视表不在。
+
+    原先每个维度占四页——条形图两页加透视表两页，而两者读法不同（倍数 vs 绝对值），读者要在两种
+    读法之间来回换算。现在 deck 只留条形（相对倍数、越长越差、统一方向）；绝对值一个都没少，只是
+    只出现在 report.md 的正文与附录里。
+
+    判据是**结构**而不是措辞：透视表是"行 = (并发度, 档位)、列 = 全部方案"那张宽表，deck 里任何一
+    行都不该有 7 个以上的单元格。按列数断比按文字断稳——表格的措辞会随语言与版式变，列数不会。
+    """
     page = _deck(_model())
+    markdown = markdown_renderer.render_markdown(_model(), [])
 
     for title in ("延迟分位数与抖动", "框架自身开销占比", "吞吐与并发伸缩"):
         assert f"{blocks_module.dimension_section_prefix(LANG_ZH)}{title}" in page, (
@@ -411,23 +434,30 @@ def test_each_charted_dimension_keeps_its_value_table() -> None:
         )
         assert f'<h2 class="h-md">{title}：并发度' in page, f"少了 {title} 的条形图页"
 
+    wide = [row for row in _ROW.findall(page) if len(_CELL.findall(row)) > 6]
+    assert not wide, "deck 里出现了透视表（行 = 并发度与档位、列 = 全部方案）——它应当只在全文里"
+    assert "| 并发度 | 执行体档位" in markdown, "透视表在全文里也该在"
+
 
 # ------------------------------------------------------------------ 同源
 
 
-def test_hero_number_equals_the_markdown_figure() -> None:
-    """核心结论那个大数字必须与全文里的同一个数相等。
+def test_the_big_numbers_equal_the_full_text() -> None:
+    """一句话结论那三个大数字必须与全文里的同一批数相等。
 
-    两条路径（deck 取模型的原始浮点、全文取块层的格式化字符串）若各算各的，第一个不一致的
-    地方就是这里，而它恰恰是读者最先记住的数。
+    两条路径（deck 取模型的原始浮点、全文取块层的格式化字符串）若各算各的，第一个不一致的地方
+    就是这里，而它们恰恰是读者最先记住的数。三个数各回答一个问题：多大才划算（开销阈值交叉点）、
+    短任务上代价多大（最短档的框架开销占比）、输了多远（本期最大劣势倍数）。
     """
     model = _model(ratio=0.0157)
     page = _deck(model)
     markdown = markdown_renderer.render_markdown(model, [])
 
-    match = re.search(r'<div class="stat-num">([\d.]+)<span class="unit">%</span>', page)
-    assert match, "少了核心结论的大数字页"
-    assert f"{match.group(1)}%" in markdown
+    numbers = re.findall(r'<div class="n">([\d.]+)<small>[^<]*</small></div>', page)
+    assert numbers, "少了核心结论的大数字页"
+    assert "1.25" in numbers, "本期最大劣势应当是 1/0.8 = 1.25——它由模型导出，不是写死的"
+    for number in numbers:
+        assert number in markdown, f"大数字 {number} 在全文里找不到同一个数"
 
 
 def test_disadvantage_count_matches_the_full_text() -> None:
@@ -548,7 +578,7 @@ def test_numeric_animation_never_invents_a_number() -> None:
     """
     page = _deck(_model())
 
-    assert '<div class="stat-num">1.57<span class="unit">%</span></div>' in page, "DOM 里就该是真值"
+    assert '<div class="n">1.25<small>x</small></div>' in page, "DOM 里就该是真值"
     assert _lines_starting_with(page, "node.nodeValue = original"), "收尾必须逐字写回原值"
     assert _lines_starting_with(page, "window.addEventListener('beforeprint'"), (
         "打印途中要强制收尾——而且必须是无条件的，不能被套进任何判断里"
@@ -595,17 +625,33 @@ def test_an_oversized_piece_raises_instead_of_being_cut() -> None:
 
 
 def test_long_prose_is_paginated_not_failed() -> None:
-    """长散文要分页而不是让导出失败——"告警文案长了一点"不是渲染错误。"""
+    """长散文要分页而不是让导出失败——"口径说明写长了一点"不是渲染错误，更不该被版面吃掉一截。
+
+    **原先用「口径局限」的长文本试**（那一节当时进 deck）。口径局限与"加入你自己的对照"现在
+    **不进** deck：它们是长散文，全文里逐字可查，而 deck 的每一页页脚都点名了对应章节。故改用
+    选型速查表下的口径说明——它进 deck，且长度由内容决定。
+    """
     model = _model()
     long_text = "这是一句很长的告警文案。" * 80
-    model["caveats"] = [{"kind": "被测层级", "text": long_text}]
+    model["conclusion"]["choice"] = {
+        "rows": [
+            {
+                "concurrency": 1,
+                "body_tier_us": 40.0,
+                "kind": "tied",
+                "baseline": None,
+                "multiple": None,
+            }
+        ],
+        "criterion": long_text,
+        "body_note": "另一条说明。",
+    }
 
     page = _deck(model)
 
     # 全文都在（切开后分页续排），且没有"省略"之类的说法
-    assert len(page) > 0
-    assert "省略" not in page
     assert page.count("这是一句很长的告警文案。") == 80
+    assert "省略" not in page
 
 
 def test_wide_charts_split_across_pages() -> None:
@@ -619,3 +665,353 @@ def test_wide_charts_split_across_pages() -> None:
     # 被测框架 + 14 个对照 = 15 根条形 → 切成 (1/2)、(2/2)
     assert "（1/2）" in page
     assert "（2/2）" in page
+
+
+# ------------------------------------------------------------------ 改版后的信息架构不变量
+#
+# 上面用的是手搭的小模型（专测某一句话），下面要验的是**页数预算、分页、中英一致、数值不丢**
+# 这类只有全尺寸矩阵才谈得上的性质，故这里另起一份六方案 × 四并发度 × 四档位的合成留档，
+# 并且**经真实的 build_model 走通**——选型速查、三分类、带宽都由此产生，不是手写的模型字典。
+
+_TIERS = (40.0, 300.0, 2700.0, 10000.0)
+_CONCURRENCIES = (1, 4, 16, 64)
+_BASELINES = ("rival_a", "rival_b", "rival_c", "rival_d", "rival_e")
+
+#: 逐轮样本的条数。分类要算带宽（见 report.MIN_ROUNDS_FOR_BAND），少于 4 轮就一概不判定。
+_SAMPLE_ROUNDS = 6
+
+
+def _values(value: float) -> dict[str, float | int]:
+    return {
+        "n": 3,
+        "median": value,
+        "mean": value,
+        "min": value,
+        "max": value,
+        "stdev": 0.0,
+        "iqr": 0.0,
+        "p50": value,
+        "p95": value,
+        "p99": value,
+        "relative_spread": 0.0,
+    }
+
+
+def _synthetic_unit(
+    adapter: str, *, under_test: bool, concurrency: int, tier_us: float, e2e: float
+) -> dict[str, Any]:
+    body = e2e * 0.5
+    return {
+        "spec": {"adapter": adapter, "concurrency": concurrency, "body_tier_us": tier_us},
+        "status": "ok",
+        "process": {"pid": 1000},
+        "adapter": {
+            "name": adapter,
+            "tier": "under_test" if under_test else "bare",
+            "comparable": True,
+            "notes": "",
+            "drive_level": "调度派发层",
+        },
+        "absolute": {
+            "note": ABSOLUTE_NOTE,
+            "concurrency": concurrency,
+            "end_to_end_per_task_seconds": _values(e2e),
+            "body_seconds": _values(body),
+            "framework_overhead_seconds": e2e - body,
+            "framework_overhead_ratio": (e2e - body) / e2e,
+            "throughput_per_second": concurrency / e2e,
+        },
+        "checks": {"body": {"body_deviation_ok": True}},
+        # 抖动 ±0.1%：带宽因此远小于"快一倍"这类差异，故**分类结果由构造决定、不由噪声决定**
+        "rounds": [
+            {
+                "batch": concurrency,
+                "wall_seconds": concurrency * e2e * (1 + (index % 3 - 1) * 0.001),
+                "round": index,
+            }
+            for index in range(_SAMPLE_ROUNDS)
+        ],
+    }
+
+
+def _attribution_group(adapter: str, *, under_test: bool, e2e: float) -> dict[str, Any]:
+    """归因的一组四段：段值给成确定的比例，故"超出落在哪一段"可复算。"""
+    return {
+        "adapter": adapter,
+        "adapter_tier": "under_test" if under_test else "bare",
+        "comparable": True,
+        "concurrency": 4,
+        "tier_us": 300.0,
+        "status": "ok",
+        "segments": {
+            "submit_side_seconds": e2e * 0.1 if under_test else e2e * 0.02,
+            "handoff_seconds": e2e * 0.02,
+            "body_seconds": e2e * 0.8,
+            "return_seconds": e2e * 0.03 if under_test else e2e * 0.02,
+        },
+        "end_to_end_seconds": e2e,
+        "drill_down": {},
+    }
+
+
+def _full_archive() -> dict[str, Any]:
+    """六方案 × 四并发度 × 四档位的合成留档，比例**按构造给定**。
+
+    24 个格上对照方案快一倍（不利数据跨一页以上），1 个格上被测框架快一倍（优势节不为空），
+    其余打平（分不出胜负）。留档里还带着**原始的进程隔离结构**（含重复 PID、`all_distinct` 为假），
+    用来证明报告不再把它印出来。
+    """
+    units: list[dict[str, Any]] = []
+    comparisons: list[dict[str, Any]] = []
+    for concurrency in _CONCURRENCIES:
+        for tier_us in _TIERS:
+            subject_e2e = tier_us / 1e6 * 1.05
+            units.append(
+                _synthetic_unit(
+                    "zoo",
+                    under_test=True,
+                    concurrency=concurrency,
+                    tier_us=tier_us,
+                    e2e=subject_e2e,
+                )
+            )
+            ratios: dict[str, float] = {}
+            for index, baseline in enumerate(_BASELINES):
+                fast = index < 4 and concurrency in (4, 16) and tier_us >= 300
+                ahead = index == 4 and concurrency == 1 and tier_us == 40.0
+                ratio = 0.5 if fast else (1.5 if ahead else 1.0)
+                ratios[baseline] = ratio
+                units.append(
+                    _synthetic_unit(
+                        baseline,
+                        under_test=False,
+                        concurrency=concurrency,
+                        tier_us=tier_us,
+                        e2e=subject_e2e / ratio,
+                    )
+                )
+            comparisons.append(
+                {
+                    "concurrency": concurrency,
+                    "body_tier_us": tier_us,
+                    "subject": "zoo",
+                    "subject_median_seconds": subject_e2e,
+                    "ratios_vs_subject": ratios,
+                    "excluded_incomparable": [],
+                    "note": "",
+                }
+            )
+    return {
+        "run": {"platform": "test", "python": "3.13", "absolute_note": ABSOLUTE_NOTE},
+        "units": units,
+        "relative": {"note": "", "comparisons": comparisons},
+        "verification": {},
+        # **原始的进程隔离结构**：PID 有重复、all_distinct 为假。它只该留在留档里。
+        "process_isolation": {
+            "parent_pid": 4242,
+            "child_pids": [5000, 5001, 5001, 5003],
+            "all_distinct": False,
+            "none_equals_parent": True,
+        },
+        "self_check": {"ok": True},
+        "attribution": {
+            "cores": 24,
+            "tiers_us": [300.0],
+            "concurrencies": [4],
+            "over_subscribed_concurrencies": [],
+            "note": "",
+            "groups": [
+                _attribution_group("zoo", under_test=True, e2e=0.0004),
+                _attribution_group("rival_a", under_test=False, e2e=0.0003),
+            ],
+        },
+        "environment": {
+            "hardware": {"cpu_model": "合成 CPU", "logical_cores": 24, "platform": "Test-AMD64"},
+            "os": {"system": "TestOS", "release": "1", "version": "1.0"},
+            "python": {"version": "3.13.0", "implementation": "CPython", "executable": "/py"},
+            "subject": {"dist_version": "9.9.9", "module_version": "1.0"},
+            "harness": {"version": "0.0.1", "commit": "deadbeef"},
+            "command": ["zoo-bench", "run"],
+        },
+    }
+
+
+def _full_blocks(lang: str, archive: dict[str, Any] | None = None) -> list[Any]:
+    model = build_model(archive or _full_archive(), lang=lang)
+    return build_blocks(model, [], lang=lang)
+
+
+def _full_deck(lang: str, archive: dict[str, Any] | None = None) -> str:
+    model = build_model(archive or _full_archive(), lang=lang)
+    return deck_module.render_deck(model, build_blocks(model, [], lang=lang))
+
+
+def _full_markdown(lang: str, archive: dict[str, Any] | None = None) -> str:
+    model = build_model(archive or _full_archive(), lang=lang)
+    return markdown_renderer.render_markdown(model, [])
+
+
+#: 页数上限。**这是验收的硬指标**，不是建议：deck 的价值是"三十秒内知道结论"。
+DECK_PAGE_BUDGET = 16
+
+
+def test_deck_meets_the_page_budget_and_both_languages_line_up() -> None:
+    """页数在预算内，且中英两种语言的**页数与页序一一对应**。
+
+    页数由内容决定（不利数据一档不少，故它随数据增长），所以这条断言必须在全尺寸矩阵上做；
+    中英对应则是"同一份报告换个语言"的底线——两份各排各的，读者在它们之间就对不上页。
+    """
+    english = _slides(_full_deck(LANG_EN))
+    chinese = _slides(_full_deck(LANG_ZH))
+
+    assert len(english) == len(chinese), "中英两份 deck 的页数不一致"
+    assert len(chinese) <= DECK_PAGE_BUDGET, (
+        f"deck 有 {len(chinese)} 页，超过 {DECK_PAGE_BUDGET} 页"
+    )
+    for (en_label, _), (zh_label, _) in zip(english, chinese, strict=True):
+        # 标签带序号前缀（`01 封面`），比的是序号之后那部分
+        assert en_label.split(" ", 1)[0] == zh_label.split(" ", 1)[0], "页码错位"
+
+
+def test_deck_never_prints_the_raw_process_isolation_structure() -> None:
+    """自检那一节只给**可读结论**，MUST NOT 把内部诊断结构（PID 列表）印进报告。
+
+    留档里那份结构带着重复 PID 与 `all_distinct: false`（`_full_archive` 就是这么造的）：原样
+    渲染出来就是一串数字加一句没人解释的裸字段——那正是本轮要修掉的形态。
+
+    字段名与裸值都不许出现，**两种产物都查**（deck 与全文）。
+    """
+    for lang in (LANG_EN, LANG_ZH):
+        for text in (_full_deck(lang), _full_markdown(lang)):
+            for field in ("parent_pid", "child_pids", "all_distinct", "4242", "5000"):
+                assert field not in text, f"报告里出现了内部诊断结构：{field}"
+    # 结论仍然在场，且**不是**判为通过（all_distinct 为假、且看得到重复）
+    # 结论仍然在场，且**不是**判为通过（all_distinct 为假、且看得到重复）。
+    # 全文里比对整句（那里保留 `**待查**` 的行内标记），deck 里比对渲染后的字。
+    assert (
+        t("blocks.self_check.isolation_duplicate", LANG_ZH, count=4, duplicates=1)
+        in _full_markdown(LANG_ZH)
+    )
+    assert "待查" in _full_deck(LANG_ZH)
+
+
+def test_choice_matrix_cells_are_derived_from_the_model() -> None:
+    """选型速查的四个格子各由**模型**导出：对照快 / 被测框架快 / 分不出 / 无数据。
+
+    构造方式就是改留档里的逐档相对比，然后看渲染出来的格子跟着变——渲染层若自己判断"谁最快"，
+    换个留档它就不会变，那样这条用例会红。
+
+    四个格子一次覆盖完，是因为它们的判据互不相同：前两个看**方向**，第三个看**带宽**，第四个看
+    **有没有对照单元**——「分不出」与「无数据」含义相反，混起来才是问题。
+    """
+    archive = _full_archive()
+    for comparison in archive["relative"]["comparisons"]:
+        key = (comparison["concurrency"], comparison["body_tier_us"])
+        if key == (1, 40.0):
+            # 全部对照与被测框架打平：差异为 0，必落在带宽内
+            comparison["ratios_vs_subject"] = dict.fromkeys(_BASELINES, 1.0)
+        elif key == (1, 300.0):
+            # 全部对照都慢一半：被测框架是这一格最快的
+            comparison["ratios_vs_subject"] = dict.fromkeys(_BASELINES, 1.5)
+        elif key == (64, 10000.0):
+            # 这一格一个对照单元都没有
+            comparison["ratios_vs_subject"] = {}
+
+    tier_header = t("blocks.header.body_tier_n", LANG_ZH, tier=format_tier_us(40.0, LANG_ZH))
+    table = next(
+        block
+        for block in _full_blocks(LANG_ZH, archive)
+        if block.kind == blocks_module.TABLE and tier_header in block.headers
+    )
+    cells = {row[0]: row[1:] for row in table.rows}
+
+    assert cells["4"][1] == t(
+        "blocks.choice.cell.baseline", LANG_ZH, baseline="rival_a", multiple=2.0
+    ), "对照方案快一倍的那一格应当点名它、并给出倍数"
+    assert cells["1"][1] == t("blocks.choice.cell.subject", LANG_ZH, subject="zoo")
+    assert cells["1"][0] == t("blocks.choice.cell.tied", LANG_ZH)
+    assert cells["64"][3] == t("blocks.cell.no_data", LANG_ZH)
+
+
+def _appendix_units(markdown: str) -> dict[int, set[tuple[str, str, str]]]:
+    """附录里每张逐单元表的 (方案, 并发度, 档位) 集合，按列数分组（三张表的列数各不相同）。"""
+    # 按**标题**切，不能按那几个字切：正文的附录指引里也写着「附录：全部数值」，
+    # 照字面切会把正文的几张表一并吃进来（实测列数集合因此多出 5 与 8）。
+    appendix_heading = "## " + blocks_module.appendix_section_prefix(LANG_ZH) + t(
+        "blocks.appendix.all_values", LANG_ZH
+    )
+    appendix = markdown.split(appendix_heading, 1)[1]
+    header = (
+        t("blocks.header.scheme", LANG_ZH),
+        t("blocks.header.concurrency", LANG_ZH),
+        t("blocks.header.body_tier", LANG_ZH),
+    )
+    tables: dict[int, set[tuple[str, str, str]]] = {}
+    for line in appendix.splitlines():
+        if not line.startswith("| ") or set(line) <= set("|- "):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if "---" in cells or tuple(cells[:3]) == header:
+            continue
+        tables.setdefault(len(cells), set()).add((cells[0], cells[1], cells[2]))
+    return tables
+
+
+def test_no_archived_value_is_dropped_from_the_report() -> None:
+    """**数值一个都不能少**：留档里的每个单元在每个维度上都还在，且逐单元的字段一个不少。
+
+    改版把 deck 上的透视表拿掉、把摘要里的逐条列举换成矩阵——这类"重排"最容易顺手丢掉一列。
+    故不断言某句话在场，而断言**集合相等**：附录里三张逐单元表的 (方案, 并发度, 档位) 集合必须
+    与留档里成功单元的全集相等，且三张表的列数（= 每行的字段数）与改版前一致。
+
+    这一条是 spec「可读化不删数值」的直接对应物。
+    """
+    archive = _full_archive()
+    markdown = _full_markdown(LANG_ZH, archive)
+    expected = {
+        (
+            unit["spec"]["adapter"],
+            str(unit["spec"]["concurrency"]),
+            f"{unit['spec']['body_tier_us']:g}",
+        )
+        for unit in archive["units"]
+        if unit["status"] == "ok"
+    }
+    tables = _appendix_units(markdown)
+
+    # 延迟 7 列（中位数/p95/p99/离散度）、开销 6 列、吞吐 4 列
+    assert set(tables) == {7, 6, 4}, f"附录的表结构变了：{sorted(tables)}"
+    for columns, found in tables.items():
+        assert found == expected, f"{columns} 列的那张附录表丢了单元：{sorted(expected - found)}"
+
+
+def test_a_long_advantage_list_is_paginated_not_failed() -> None:
+    """优势清单多到一页装不下时要**续排**，而不是让渲染失败。
+
+    提交的留档里实测有 14 档优势（加表头 15 行 > 一页 14 行），而先前的实现把整张表塞进一栏，
+    `_stack_or_split` 于是抛 `DeckOverflowError`——**整个 render 命令失败**，站点根本建不出来。
+    优势与不利两节结构对称（spec 要求同等显著），故它按同一套办法分页：切在对照方案的边界上、
+    续页标题点名覆盖了哪几家。
+
+    夹具给 5 家对照 × 3 个档位 = 15 档优势，刚好跨过一页。
+    """
+    archive = _full_archive()
+    hot = {(4, 300.0), (16, 2700.0), (64, 10000.0)}
+    for comparison in archive["relative"]["comparisons"]:
+        key = (comparison["concurrency"], comparison["body_tier_us"])
+        # 那三格上全部对照都慢一半：被测框架在 5 × 3 = 15 个档位上更快
+        comparison["ratios_vs_subject"] = dict.fromkeys(_BASELINES, 1.5 if key in hot else 1.0)
+
+    model = build_model(archive, lang=LANG_ZH)
+    page = deck_module.render_deck(model, build_blocks(model, [], lang=LANG_ZH))
+    labels = [label.split(" ", 1)[1] for label, _ in _slides(page)]
+
+    assert len(model["favorable"]["items"]) == len(_BASELINES) * len(hot)
+    assert len(model["favorable"]["items"]) > deck_module.SLIDE_ROW_CAP, (
+        "夹具要跨过一页容量，否则这条断言证明不了续排"
+    )
+    continued = [
+        label for label in labels if label.startswith(t("blocks.favourable.title", LANG_ZH))
+    ]
+    assert len(continued) >= 1, "优势清单跨页时必须有续页标题"
+    assert not [label for label in labels if label.endswith("（续）")], "不得退回「（续）」式的标题"

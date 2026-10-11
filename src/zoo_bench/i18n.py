@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 import string
 from typing import Any
 
@@ -199,15 +200,8 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_EN: "no measured tier brought the overhead share below the threshold",
         LANG_ZH: "所测档位内没有一档的开销占比降到阈值以下",
     },
-    "report.turning.smallest_match": {
-        LANG_EN: "this is the smallest measured tier that satisfies the condition",
-        LANG_ZH: "该档位是所测档位中最小的满足者",
-    },
-    "report.turning.never_slower": {
-        LANG_EN: "**not observed**: within the measured tiers this baseline is always faster "
-        "than the framework under test",
-        LANG_ZH: "**未观测到**：所测档位内该对照方案始终快于被测框架",
-    },
+    # 「该档位是所测档位中最小的满足者」这句原先逐行重复 20 遍。它现在由**表下一条共同说明**
+    # 承担（blocks.turning.reading），故这里不再有它。
     "report.summary.crossing_found": {
         LANG_EN: "Once the framework under test {subject} runs a body of about {tier:g} "
         "microseconds or more, its framework overhead drops below {threshold:.0%} of end-to-end; "
@@ -236,18 +230,34 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_ZH: "并发度 {concurrency}、执行体 {tier:g} 微秒 下，被测框架比 {baseline} 快 "
         "{multiple:.2f}x（该并发度所测档位中最快的一档）。",
     },
-    "report.summary.turning_found": {
-        LANG_EN: "At concurrency {concurrency}, once the body exceeds about {tier:g} "
-        "microseconds, {baseline} is no longer faster than the framework under test.",
-        LANG_ZH: "并发度 {concurrency} 下，执行体时长超过约 {tier:g} 微秒 后，{baseline} "
-        "不再快于被测框架。",
+    "report.summary.matrices": {
+        LANG_EN: "The two matrices that follow answer the selection question directly: the "
+        "selection quick reference (which scheme is fastest at each concurrency and body tier) "
+        "and the turning points (from which body tier each baseline stops being faster). "
+        "'no winner' and 'not observed' are conclusions drawn from this run's own band  -  "
+        "they are not missing data.",
+        LANG_ZH: "下面两张矩阵直接回答选型问题：「选型速查」（每个并发度与执行体档位上谁最快）"
+        "与「转折点」（每个对照方案从多大档位起不再更快）。写在格里的「分不出」与「未观测到」"
+        "是本期带宽下的结论，不是缺数据。",
     },
-    "report.summary.turning_missing": {
-        LANG_EN: "At concurrency {concurrency}, within the measured tiers {baseline} is "
-        "**always faster** than the framework under test  -  tiers like these are exactly the "
-        "openly published unfavourable data of this report.",
-        LANG_ZH: "并发度 {concurrency} 下，所测档位内 {baseline} "
-        "**始终快于**被测框架——这类档位正是本报告的公开不利数据。",
+    "report.choice.criterion": {
+        LANG_EN: "a cell = the scheme with the smallest median at that (concurrency, body tier) "
+        "**whose gap exceeds that tier's band**; 'no winner' = every baseline falls inside the "
+        "band; 'no data' = no baseline unit exists for that cell. The band is the sum of both "
+        "sides' cross-round relative spread  -  the same criterion the faster / slower / "
+        "no-winner sections use.",
+        LANG_ZH: "单元格 = 该（并发度, 执行体档位）上中位数最快、**且差异超出该档带宽**的那个"
+        "方案；「分不出」= 全部对照都落在带宽内；「无数据」= 该格没有对照方案的单元。带宽 = "
+        "两侧跨轮相对离散度之和，与「更快 / 更慢 / 分不出胜负」三节是同一条判据。",
+    },
+    "report.choice.body_note": {
+        LANG_EN: "**the body in this matrix is CPU-bound** ({composition}). That is why a "
+        "process pool leads at concurrency 4 and above: it gets parallelism that bypasses the "
+        "GIL. This need not hold for I/O-bound tasks, and this matrix contains no I/O tier, so "
+        "it must not be extrapolated to them.",
+        LANG_ZH: "**本矩阵的执行体是 CPU 型**（{composition}）。故并发 4 及以上时占优的是多进程"
+        "——那等于绕过 GIL 的并行度；这在 I/O 型任务上未必成立，而本矩阵没有 I/O 档，"
+        "不能外推到 I/O 型任务。",
     },
     "report.classify.no_rounds": {
         LANG_EN: "the per-round samples are missing (or too few), so this difference cannot be "
@@ -689,6 +699,65 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_EN: "Relative turning points",
         LANG_ZH: "相对转折点",
     },
+    "blocks.turning.not_observed": {
+        LANG_EN: "not observed",
+        LANG_ZH: "未观测到",
+    },
+    "blocks.turning.reading": {
+        LANG_EN: "how to read: a filled cell is the **smallest** measured tier that satisfies "
+        "the condition; the true turning point lies between it and the previous tier. "
+        "'not observed' means that within the measured tiers this baseline stayed faster than "
+        "the framework under test  -  **that is a conclusion for this run, not missing data**. "
+        "'no data' means this baseline has no unit at that concurrency.",
+        LANG_ZH: "读法：填了数字的格是所测档位中**最小的**满足者，真实转折点落在它与前一档之间；"
+        "「未观测到」表示所测档位内该方案始终快于被测框架——**那是本期结论，不是缺数据**；"
+        "「无数据」表示该并发度下该方案没有单元。",
+    },
+    "blocks.crossing.smallest_shared": {
+        LANG_EN: "a cell with a tier in it is the **smallest** measured tier that satisfies the "
+        "condition; the true crossing point lies between it and the previous tier.",
+        LANG_ZH: "填了数字的格 = 所测档位中**最小的**满足者；真实交叉点落在它与前一档之间。",
+    },
+    "blocks.crossing.subject_row": {
+        LANG_EN: "the framework under test {subject} itself (overhead share down to or below "
+        "{threshold:.0%}): {parts}.",
+        LANG_ZH: "被测框架 {subject} 自身（框架开销占比降到 {threshold:.0%} 及以下）：{parts}。",
+    },
+    "blocks.crossing.subject_item": {
+        LANG_EN: "concurrency {concurrency} - {tier}",
+        LANG_ZH: "并发 {concurrency} · {tier}",
+    },
+    "blocks.crossing.subject_item_gap": {
+        LANG_EN: "concurrency {concurrency} - none given (see the note column above)",
+        LANG_ZH: "并发 {concurrency} · 不给交叉点（原因见上表说明列）",
+    },
+    "blocks.section.choice": {
+        LANG_EN: "Selection quick reference",
+        LANG_ZH: "选型速查",
+    },
+    "blocks.choice.cell.baseline": {
+        LANG_EN: "{baseline} {multiple:.2f}x",
+        LANG_ZH: "{baseline} {multiple:.2f}x",
+    },
+    "blocks.choice.cell.subject": {
+        LANG_EN: "{subject} (fastest)",
+        LANG_ZH: "{subject} 最快",
+    },
+    "blocks.choice.cell.tied": {LANG_EN: "no winner", LANG_ZH: "分不出"},
+    "blocks.cell.no_data": {LANG_EN: "no data", LANG_ZH: "无数据"},
+    "blocks.turning.intro": {
+        LANG_EN: "a cell = the body tier from which that baseline is no longer faster than the "
+        "framework under test.",
+        LANG_ZH: "单元格 = 该对照方案从哪一档执行体起不再快于被测框架。",
+    },
+    "blocks.header.concurrency_n": {
+        LANG_EN: "concurrency {concurrency}",
+        LANG_ZH: "并发 {concurrency}",
+    },
+    "blocks.header.body_tier_n": {
+        LANG_EN: "body tier {tier}",
+        LANG_ZH: "执行体 {tier}",
+    },
     "blocks.header.scheme": {LANG_EN: "scheme", LANG_ZH: "方案"},
     "blocks.header.baseline": {LANG_EN: "baseline", LANG_ZH: "对照方案"},
     "blocks.header.concurrency": {LANG_EN: "concurrency", LANG_ZH: "并发度"},
@@ -926,9 +995,37 @@ MESSAGES: dict[str, dict[str, str]] = {
     },
     "blocks.self_check.passed": {LANG_EN: "passed", LANG_ZH: "通过"},
     "blocks.self_check.failed": {LANG_EN: "**failed**", LANG_ZH: "**未通过**"},
-    "blocks.self_check.isolation": {
-        LANG_EN: "process isolation: {value}",
-        LANG_ZH: "进程隔离：{value}",
+    "blocks.self_check.units": {
+        LANG_EN: "units in this run: {total} valid, {failed} failed (failed units are excluded "
+        "from the numbers)",
+        LANG_ZH: "本轮单元：有效 {total}、失败 {failed}（失败单元不入统计）",
+    },
+    # 进程隔离原先直接把留档里的原始字典（父进程号 + 一串子进程号）印进报告，九十多个数字
+    # 铺满一整页。它现在是一条可读结论；原始 PID 列表只在留档 JSON 里。
+    "blocks.self_check.isolation_ok": {
+        LANG_EN: "process isolation: {count} units each ran in their own process, and no child "
+        "PID equals the parent - isolation holds",
+        LANG_ZH: "进程隔离：{count} 个单元各自独立进程，子进程 PID 均不等于父进程，进程隔离通过",
+    },
+    "blocks.self_check.isolation_duplicate": {
+        LANG_EN: "process isolation: {count} units each ran in their own process, but {duplicates} "
+        "child PIDs repeat. PID reuse is a common cause, so this is recorded as **to be checked** "
+        "rather than passed; the raw PID list stays in the archive.",
+        LANG_ZH: "进程隔离：{count} 个单元各自独立进程，但有 {duplicates} 处子进程 PID 重复。"
+        "PID 复用是常见原因，故标注为**待查**而不是判为通过；原始 PID 列表只留在留档里。",
+    },
+    "blocks.self_check.isolation_parent": {
+        LANG_EN: "process isolation: a child PID equals the parent PID - isolation does not hold",
+        LANG_ZH: "进程隔离：有子进程 PID 等于父进程，进程隔离不成立",
+    },
+    "blocks.self_check.isolation_flagged": {
+        LANG_EN: "process isolation: the archive records this check as not fully distinct - "
+        "recorded as **to be checked** rather than passed",
+        LANG_ZH: "进程隔离：留档把这次检查记为未全部互异，故标注为**待查**而不是判为通过",
+    },
+    "blocks.self_check.isolation_missing": {
+        LANG_EN: "process isolation: not recorded in this archive",
+        LANG_ZH: "进程隔离：本份留档没有记录该项",
     },
     "blocks.extension.title": {
         LANG_EN: "bring your own baseline",
@@ -1069,7 +1166,13 @@ MESSAGES: dict[str, dict[str, str]] = {
         "number stands.",
         LANG_ZH: "开场：强调同口径、可复现，为后面所有数字建立可信度。",
     },
-    "deck.content.suffix": {LANG_EN: " (cont.)", LANG_ZH: "（续）"},
+    # 续页的标题**要说清这一页在讲什么**（spec：「页标题自述内容」）。能按语义切的章节
+    # （不利数据按对照方案、图表按档位区间）另有专门的键；这一条是"切不出语义边界"时的兜底：
+    # 它至少说明这是第几片、共几片，而不是一个「（续）」。
+    "deck.content.part": {
+        LANG_EN: "{title} (part {index}/{total})",
+        LANG_ZH: "{title}（第 {index}/{total} 部分）",
+    },
     "deck.content.label.fallback": {LANG_EN: "body", LANG_ZH: "正文"},
     "deck.content.eyebrow.default": {
         LANG_EN: "zoo-bench report",
@@ -1152,37 +1255,133 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_ZH: "数据：zoo-bench「{title}」· 并发度 {concurrency} · "
         "逐单元数值与分位数见 report.md 的同一章节",
     },
-    "deck.stat.label": {LANG_EN: "key takeaway", LANG_ZH: "核心结论"},
-    "deck.stat.eyebrow": {
-        LANG_EN: "framework overhead share",
-        LANG_ZH: "框架自身开销占比",
+    # 分页续排时标题要说出**这一页覆盖哪一段档位**，而不是加一个「（续）」（spec：
+    # 「页标题自述内容」）。
+    "deck.chart.heading.range": {
+        LANG_EN: "{title} at concurrency {concurrency} - body tiers {low} to {high}",
+        LANG_ZH: "{title}：并发度 {concurrency} · 执行体 {low} 至 {high}",
     },
-    "deck.stat.verdict.lowest": {
-        LANG_EN: "the framework under test has the lowest share at this tier.",
-        LANG_ZH: "该档位被测框架的占比最低。",
+    # ── 一句话结论页（原先埋在第 1 条 bullet 里的三个数）──────────────
+    "deck.verdict.label": {LANG_EN: "one-line conclusion", LANG_ZH: "一句话结论"},
+    "deck.verdict.eyebrow": {
+        LANG_EN: "what this report answers",
+        LANG_ZH: "这份报告回答什么",
     },
-    "deck.stat.verdict.lower": {
-        LANG_EN: "{count} baselines are lower at this tier: {adapters}.",
-        LANG_ZH: "该档位有 {count} 个方案更低：{adapters}。",
+    "deck.verdict.heading": {
+        LANG_EN: "read the price of {subject} as \"how long is the task\", not as \"how much "
+        "faster than a bare thread\".",
+        LANG_ZH: "{subject} 的账要按「任务多长」算，不能按「比裸线程快多少」算。",
     },
-    "deck.stat.caption": {
-        LANG_EN: "Framework overhead share of {subject} at body tier {tier:g} microseconds.",
-        LANG_ZH: "执行体 {tier:g} 微秒 时，{subject} 的框架自身开销占比。",
+    "deck.verdict.kpi.crossing": {
+        LANG_EN: "at this body duration the framework overhead drops below {threshold:.0%} of "
+        "end-to-end; below it, the framework overhead itself is the main price of choosing "
+        "{subject}.",
+        LANG_ZH: "执行体达到这个长度，框架开销降到端到端的 {threshold:.0%} 以下；短于此，"
+        "选 {subject} 的主要代价就是框架开销本身。",
     },
-    "deck.stat.same_tier": {
-        LANG_EN: "same-tier comparison: {comparison}",
-        LANG_ZH: "同档对比：{comparison}",
+    "deck.verdict.kpi.overhead": {
+        LANG_EN: "of a concurrency-{concurrency}, {tier} task is eaten by the framework's own "
+        "overhead. The same-tier {rival} is at {rival_share:.2%}.",
+        LANG_ZH: "并发 {concurrency}、{tier} 的任务里，被框架自身开销吃掉的比例。"
+        "同档 {rival} 是 {rival_share:.2%}。",
     },
-    "deck.stat.source": {
-        LANG_EN: 'data: zoo-bench "framework overhead share" at concurrency {concurrency}, '
-        "body tier {tier:g} microseconds",
-        LANG_ZH: "数据：zoo-bench「框架自身开销占比」· 并发度 {concurrency} · "
-        "执行体 {tier:g} 微秒 档",
+    "deck.verdict.kpi.gap": {
+        LANG_EN: "how much faster {baseline} is than {subject} at concurrency {concurrency}, "
+        "{tier} - the largest loss this run, driven by the GIL.",
+        LANG_ZH: "并发 {concurrency}、{tier} 的任务上 {baseline} 比 {subject} 快的倍数"
+        "——本期最大的一处劣势，起因是 GIL。",
     },
-    "deck.stat.notes": {
-        LANG_EN: "the largest measured body tier is used: the report's own selection framework "
-        'is "how large a task before overhead stops mattering".',
-        LANG_ZH: "取所测最大的执行体档位：报告自己的选型框架就是「多大的任务才划算」。",
+    "deck.verdict.note": {
+        LANG_EN: "the big numbers carry one direction only; precision comes from the per-tier "
+        "relative comparison of this same run, cited under each of them.",
+        LANG_ZH: "大字只表达方向，精度由同一次运行的逐档相对比承担（三处都注明了出处）。",
+    },
+    "deck.verdict.source": {
+        LANG_EN: "data: conclusion summary / framework overhead share",
+        LANG_ZH: "数据：结论摘要 · 框架自身开销占比",
+    },
+    # ── 选型速查页 ────────────────────────────────────────────────
+    "deck.choice.label": {LANG_EN: "selection quick reference", LANG_ZH: "选型速查"},
+    "deck.choice.eyebrow": {LANG_EN: "selection quick reference", LANG_ZH: "选型速查"},
+    "deck.choice.heading": {
+        LANG_EN: "which scheme to use, at which concurrency and body tier",
+        LANG_ZH: "多大的任务、多少并发，该用谁",
+    },
+    "deck.choice.source": {
+        LANG_EN: "data: per-tier relative comparison (same run) - criterion: sum of both sides' "
+        "cross-round spread",
+        LANG_ZH: "数据：逐档相对比（同一次运行）· 判据：两侧跨轮离散度之和",
+    },
+    # ── 转折点页 ──────────────────────────────────────────────────
+    "deck.turning.label": {LANG_EN: "turning points", LANG_ZH: "转折点"},
+    "deck.turning.eyebrow": {LANG_EN: "turning points", LANG_ZH: "转折点"},
+    "deck.turning.heading": {
+        LANG_EN: "from which body tier each baseline is no longer faster",
+        LANG_ZH: "对照方案从多大的任务起不再更快",
+    },
+    "deck.turning.source": {
+        LANG_EN: "data: conclusion summary - overhead threshold crossings and relative turning "
+        "points (replaces the 20 enumerated sentences)",
+        LANG_ZH: "数据：结论摘要 · 开销阈值交叉点 / 相对转折点（替代原先逐条列举的 20 句）",
+    },
+    # ── 赢在哪 + 分不出胜负（同页两段）────────────────────────────
+    "deck.wins.label": {LANG_EN: "where it wins - no winner", LANG_ZH: "赢在哪 · 分不出胜负"},
+    "deck.wins.eyebrow": {LANG_EN: "where it wins / no winner", LANG_ZH: "赢在哪 · 分不出胜负"},
+    "deck.wins.heading": {
+        LANG_EN: "{wins} tiers faster, {ties} tiers with no winner.",
+        LANG_ZH: "{wins} 个档位更快，{ties} 个档位分不出胜负。",
+    },
+    "deck.wins.tied": {
+        LANG_EN: "another **{count} tiers have no winner** (the two sides differ by less than "
+        "that tier's band): {per_baseline}. The band is the sum of both sides' cross-round "
+        "spread within the same run, {low:.2%} to {high:.2%} this run. Reporting noise-level "
+        "differences as 'faster by 1.00x' is the problem; that is why they are not merged into "
+        "the wins above.",
+        LANG_ZH: "另 **{count} 个档位分不出胜负**（两侧差异小于该档带宽）：{per_baseline}。"
+        "带宽取自同一次运行内两侧各自的跨轮离散度之和，本期 {low:.2%} 到 {high:.2%}。"
+        "把噪声级差异报成「快 1.00x」才是问题，故它们不并入上面的优势数据。",
+    },
+    "deck.wins.tied_item": {LANG_EN: "{baseline} {count}", LANG_ZH: "{baseline} {count}"},
+    # 优势清单与不利清单结构对称，故它的续页也按对照方案点名（与 deck.unfavorable.continued 同一套办法）
+    "deck.wins.continued": {
+        LANG_EN: "tiers where the framework under test is faster: {baselines}",
+        LANG_ZH: "被测框架在哪些档位更快：{baselines}",
+    },
+    "deck.wins.source": {
+        LANG_EN: "data: tiers where the framework under test is faster / tiers with no winner",
+        LANG_ZH: "数据：被测框架在哪些档位更快 / 分不出胜负的档位",
+    },
+    "deck.attribution.note": {
+        LANG_EN: "this page lists the {shown} tiers with the largest per-task excess out of "
+        "{total}; the segment-by-segment breakdown for every scheme and all attribution "
+        "conclusions are in the '{section}' section of report.md.",
+        LANG_ZH: "本页列出每任务超出最大的 {shown} 档（共 {total} 档）；每个方案的四段明细与"
+        "全部归因结论见 report.md 的〈{section}〉一节。",
+    },
+    # ── 可复核性页（环境 + 自检结论，无 PID 列表）──────────────────
+    "deck.repro.label": {LANG_EN: "verifiability", LANG_ZH: "可复核性"},
+    "deck.repro.eyebrow": {LANG_EN: "verifiability", LANG_ZH: "可复核性"},
+    "deck.repro.heading": {
+        LANG_EN: "under what conditions these numbers hold",
+        LANG_ZH: "这份数字在什么条件下成立",
+    },
+    "deck.repro.source": {
+        LANG_EN: "data: run environment / self-check - every raw field is in {path}",
+        LANG_ZH: "数据：运行环境 / 自检 · 完整字段见 {path}",
+    },
+    # 三条读数纪律在这一页只留**引导**：它们的英文逐字比中文长一倍（实测英文侧 18 行、中文侧 6
+    # 行），两栏也装不下——而页数在中英之间必须一致。全文里它们逐字可查，页脚点名了章节。
+    "deck.repro.caliber": {
+        LANG_EN: "reading calibers (see the '{section}' section of report.md): **{note}**",
+        LANG_ZH: "读数口径（见 report.md 的〈{section}〉一节）：**{note}**",
+    },
+    "deck.unfavorable.list_label": {
+        LANG_EN: "published unfavorable data: every tier",
+        LANG_ZH: "公开的不利数据：逐档清单",
+    },
+    "deck.unfavorable.continued": {
+        LANG_EN: "published unfavorable data: {baselines}",
+        LANG_ZH: "公开的不利数据：{baselines}",
     },
     "deck.unfavorable.cell": {
         LANG_EN: "concurrency {concurrency} at {tier:g} microseconds",
@@ -1337,12 +1536,37 @@ MESSAGES: dict[str, dict[str, str]] = {
         LANG_EN: "Changes in framework overhead share",
         LANG_ZH: "框架开销占比的变化",
     },
+    # 不可读的行**折成一行统计**（本期的实情是 96 行里有 56 行不可读，逐行铺开时读者从中
+    # 读不出任何版本差异——那 56 行说的是同一件事）。
+    # 这里**不能**在 {note} 后面再跟一个句号：note 取自 caliber.uninterpretable_reason，
+    # 它自身已以句号结尾，再补一个就产出「故照旧给出。。这些组……」（实测出现过的拼接 bug）。
+    # t() 现在会机械拦下这类写法，见 i18n.PunctuationClash。
     "compare.withheld.note": {
-        LANG_EN: '**Rows marked "unreadable"**: {note}. These groups get no "change" value on '
-        "either side - it would compare the difference of two unreadable numbers; end-to-end "
-        "and throughput are in the absolute-durations table below and in each version's report.",
-        LANG_ZH: "**标为「不可读」的行**：{note}。这些组的两侧「变化」都不给——它比的是两个"
-        "不可读的数之差；端到端与吞吐见下面的绝对耗时表与各版本的报告。",
+        LANG_EN: '**{count} rows are folded away as "unreadable"** ({groups}): {note} These '
+        'groups get no "change" value on either side - it would compare the difference of two '
+        "unreadable numbers; end-to-end and throughput are in the absolute-durations table below "
+        "and in each version's report.",
+        LANG_ZH: "**{count} 行因「不可读」被折叠**（{groups}）：{note}这些组的两侧「变化」都不给"
+        "——它比的是两个不可读的数之差；端到端与吞吐见下面的绝对耗时表与各版本的报告。",
+    },
+    "compare.folded.band": {
+        LANG_EN: "**{count} more rows are folded away**: their change falls inside the band - the "
+        "sum of both sides' cross-round relative spread in each run. The band is the same "
+        "criterion each version's report uses, so a change inside it cannot be told apart from "
+        "this run's own noise.",
+        LANG_ZH: "**另有 {count} 行被折叠**：它们的变化落在带宽内——带宽 = 两侧跨轮相对离散度"
+        "之和。判据与各版本的报告同源，故落在带宽内的变化分不出是版本差异还是本次运行的噪声。",
+    },
+    "compare.folded.no_verdict": {
+        LANG_EN: "**{count} more rows are folded away**: there are too few per-round samples on "
+        "one side to compute a band, so they are not judged at all. Inventing a band would put a "
+        "number nobody can re-check into the conclusion.",
+        LANG_ZH: "**另有 {count} 行被折叠**：某一侧的逐轮样本太少、算不出带宽，故一概不判定。"
+        "编一个带宽等于让一个无法复核的数参与结论。",
+    },
+    "compare.folded.none": {
+        LANG_EN: "no row was folded away: every shared unit's change exceeds its band.",
+        LANG_ZH: "没有行被折叠：每一个共有单元的变化都超出其带宽。",
     },
     "compare.header.adapter": {LANG_EN: "adapter", LANG_ZH: "适配器"},
     "compare.header.item": {LANG_EN: "item", LANG_ZH: "项"},
@@ -1643,6 +1867,40 @@ def template_fields(template: str) -> set[str]:
     return {name for _, name, _, _ in string.Formatter().parse(template) if name}
 
 
+#: 句末标点（中英文）。占用它的字符集与 :func:`t` 的拼接检查共用。
+SENTENCE_FINAL = "。．.；;！!？?"
+
+#: 「占位符（可带格式说明）紧跟句末标点」。检查的是**模板**，故格式说明里的 `%`、`f` 等
+#: 一并吃进 ``(?::[^{}]*)?``。
+_FIELD_THEN_PUNCTUATION = re.compile(r"\{([a-z_][a-z0-9_]*)(?::[^{}]*)?\}\s*[。．.；;！!？?]")
+
+
+class PunctuationClash(RuntimeError):
+    """模板把参数放在句末标点之前，而该参数的值自身就以句末标点结尾。
+
+    实测踩到过：`compare.withheld.note` 在 `{note}` 后紧跟一个句号，而 `note` 取自口径原因、
+    自身已以句号结尾，于是报告里出现「故照旧给出。。这些组……」。这类错误在长报告里几乎看不
+    出来——它不是缺字、不是错数，只是多了一个标点。故在渲染时机械拦下。
+    """
+
+
+def _check_punctuation_clash(key: str, lang: str, template: str, params: dict[str, Any]) -> None:
+    """模板里若有占位符紧跟句末标点，而该参数的值也以句末标点结尾，则报错。
+
+    **只在该值确实以句末标点结尾时才报**：目录里另有十多处合法写法（占位符后跟句号，但填进去
+    的是数值或方案名列表，永不带标点）。一律禁止会把这些读得通的句子一并否掉。
+    """
+    for name in _FIELD_THEN_PUNCTUATION.findall(template):
+        value = params.get(name)
+        if isinstance(value, str) and value and value[-1] in SENTENCE_FINAL:
+            raise PunctuationClash(
+                f"文案键 {key}（{lang}）在 {{{name}}} 之后紧跟句末标点，而该参数的值自身也以"
+                f"句末标点结尾——会拼出两个连着的标点。\n模板：{template}\n参数 {name} 的值以"
+                f"「{value[-1]}」结尾：…{value[-30:]}"
+                "\n改法：把模板里那个标点去掉（值自带），或让参数不带句末标点。"
+            )
+
+
 def has_translation(key: str) -> bool:
     """键是否在目录里（渲染侧区分「翻译」与「旧留档散文原样透传」的依据）。"""
     return key in MESSAGES
@@ -1664,6 +1922,7 @@ def t(key: str, lang: str, **params: Any) -> str:
 
     Raises:
         MissingTranslation: 键不存在、该语言没有译文、或模板参数与模板对不上。
+        PunctuationClash: 模板在某个参数之后紧跟句末标点，而该参数的值也以句末标点结尾。
     """
     entry = MESSAGES.get(key)
     if entry is None:
@@ -1677,6 +1936,7 @@ def t(key: str, lang: str, **params: Any) -> str:
             f"文案键 {key}（{lang}）的参数对不上："
             f"缺 {sorted(expected - set(params))}、多 {sorted(set(params) - expected)}"
         )
+    _check_punctuation_clash(key, lang, text, params)
     return text.format(**params)
 
 
